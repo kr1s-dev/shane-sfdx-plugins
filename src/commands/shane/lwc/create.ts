@@ -1,5 +1,8 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
+
+import { removeTrailingSlash } from '../../../shared/flagParsing';
+
 import fs = require('fs-extra');
 
 export default class LWCCreate extends SfdxCommand {
@@ -13,36 +16,36 @@ export default class LWCCreate extends SfdxCommand {
 
     protected static flagsConfig = {
         name: flags.string({ char: 'n', required: true, description: 'name it headsDownCamelCase' }),
-        directory: flags.directory({ char: 'd', required: true, description: "where to create the new lwc's folder" })
+        directory: flags.directory({
+            char: 'd',
+            required: true,
+            description: "where to create the new lwc's folder",
+            parse: input => removeTrailingSlash(input)
+        })
     };
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
-        // remove trailing slash if someone entered it
-        if (this.flags.directory.endsWith('/')) {
-            this.flags.directory = this.flags.directory.substring(0, this.flags.directory.length - 1);
-        }
-
         const lwcPath = `${this.flags.directory}/${this.flags.name}`;
         await fs.mkdir(lwcPath);
 
-        await fs.writeFile(`${lwcPath}/${this.flags.name}.css`, '');
-        await fs.writeFile(
-            `${lwcPath}/${this.flags.name}.html`,
-            `<template>
-
-</template>`
-        );
-        await fs.writeFile(
-            `${lwcPath}/${this.flags.name}.js`,
-
-            `import { LightningElement } from 'lwc';
-
-export default class ${this.flags.name.charAt(0).toUpperCase() + this.flags.name.slice(1)} extends LightningElement {
-
-}`
-        );
+        await Promise.all([
+            fs.writeFile(`${lwcPath}/${this.flags.name}.css`, ''),
+            fs.writeFile(`${lwcPath}/${this.flags.name}.html`, htmlFile),
+            fs.writeFile(`${lwcPath}/${this.flags.name}.js`, this.getJsFile())
+        ]);
 
         this.ux.log(chalk.green(`Empty LWC created at ${lwcPath}`));
     }
+
+    getJsFile() {
+        return `import { LightningElement } from 'lwc';
+
+export default class ${this.flags.name.charAt(0).toUpperCase() + this.flags.name.slice(1)} extends LightningElement {
+
+}`;
+    }
 }
+
+const htmlFile = `<template>
+
+</template>`;

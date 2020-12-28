@@ -1,18 +1,22 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import { Connection, SfdxError } from '@salesforce/core';
+
 import chalk from 'chalk';
-import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
+// eslint-disable-next-line import/no-unresolved
 import { Field } from 'jsforce/describe-result';
 
-import { fixExistingDollarSign, getExisting } from '../../../shared/getExisting';
-import { setupArray } from '../../../shared/setupArray';
-import { getParsed } from '../../../shared/xml2jsAsync';
+import { getExisting } from '@mshanemc/plugin-helpers/dist/getExisting';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { setupArray } from '@mshanemc/plugin-helpers/dist/setupArray';
+import { getParsed } from '@mshanemc/plugin-helpers/dist/xml2jsAsync';
 
-import * as options from '../../../shared/js2xmlStandardOptions';
+import { ToolingAPIDescribeQueryResult } from '../../../shared/typeDefs';
+
+import fs = require('fs-extra');
 
 let conn: Connection;
-let objectDescribe: Map<string, Map<string, Field>>;
+// tslint:disable-next-line: no-any
+let objectDescribe: Map<string, Map<string, any>>;
 let resolvedDescribePromises = 0;
 
 export default class PermSetCreate extends SfdxCommand {
@@ -51,6 +55,15 @@ export default class PermSetCreate extends SfdxCommand {
             description: 'API name of an field to add perms for.  Required --object If blank, then you mean all the fields',
             dependsOn: ['object']
         }),
+        recordtype: flags.string({
+            char: 'r',
+            description: 'API name of a record type to add perms for.  Required --object If blank, then you mean all the record types',
+            dependsOn: ['object']
+        }),
+        application: flags.string({
+            char: 'a',
+            description: 'API name of an application to add perms for.  If blank, then you mean all the applications'
+        }),
         directory: flags.directory({
             char: 'd',
             default: 'force-app/main/default',
@@ -59,35 +72,38 @@ export default class PermSetCreate extends SfdxCommand {
         tab: flags.boolean({ char: 't', description: 'also add the tab for the specified object (or all objects if there is no specified objects)' }),
         checkpermissionable: flags.boolean({
             char: 'c',
-            description: "some fields'permissions can't be deducted from metadata, use describe on org to check if field is permissionable"
+            description: "some fields' permissions can't be deducted from metadata, use describe on org to check if field is permissionable"
         }),
         verbose: flags.builtin()
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
+
     protected static supportsUsername = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         // fail early on lack of username
         if (this.flags.checkpermissionable && !this.org) {
             throw new SfdxError(`username is required when using --checkpermissionable`);
         }
 
-        objectDescribe = new Map<string, Map<string, Field>>();
-
-        // validations
-        if (this.flags.field && !this.flags.object) {
-            this.ux.error(chalk.red('If you say a field, you have to say the object'));
-        }
+        // tslint:disable-next-line: no-any
+        objectDescribe = new Map<string, Map<string, any>>();
 
         const targetFilename = `${this.flags.directory}/permissionsets/${this.flags.name}.permissionset-meta.xml`;
         const targetLocationObjects = `${this.flags.directory}/objects`;
 
+        // Validating passed field exists
         if (this.flags.field && !fs.existsSync(`${targetLocationObjects}/${this.flags.object}/fields/${this.flags.field}.field-meta.xml`)) {
-            this.ux.error(`Field does not exist: ${this.flags.fields}`);
-            return;
+            throw new Error(`Field does not exist: ${this.flags.fields}`);
+        }
+
+        // Validating passed record type exists
+        if (
+            this.flags.recordtype &&
+            !fs.existsSync(`${targetLocationObjects}/${this.flags.object}/recordTypes/${this.flags.recordtype}.recordType-meta.xml`)
+        ) {
+            throw new Error(`Record type does not exist: ${this.flags.recordtype}`);
         }
 
         let existing = await getExisting(targetFilename, 'PermissionSet', {
@@ -98,6 +114,19 @@ export default class PermSetCreate extends SfdxCommand {
             label: this.flags.name
         });
 
+        // Adding applications access
+        if (this.flags.application) {
+            // Flag was passed, check that application exists
+            if (!fs.existsSync(`${this.flags.directory}/applications/${this.flags.application}.app-meta.xml`)) {
+                throw new Error(`Application does not exist: ${this.flags.application}`);
+            } else {
+                existing = await this.addApplicationPerms(existing, this.flags.application);
+            }
+        } else {
+            existing = await this.addAllApplicationPermissions(existing);
+        }
+
+        // let objectList: Array<string> = new Array<string>();
         const objectList: Set<string> = new Set<string>();
 
         if (!this.flags.object) {
@@ -107,7 +136,7 @@ export default class PermSetCreate extends SfdxCommand {
             objectList.add(this.flags.object);
         }
 
-        this.ux.log(`Object list is ${objectList}`);
+        this.ux.log(`Object list is ${[...objectList]}`);
 
         if (this.flags.checkpermissionable) {
             conn = this.org.getConnection();
@@ -130,31 +159,28 @@ export default class PermSetCreate extends SfdxCommand {
                     this.getFieldsPermissions(objectName)
                         .then(result => {
                             objectDescribe.set(objectName, result);
-                            resolvedDescribePromises++;
+                            resolvedDescribePromises += 1;
                             this.ux.setSpinnerStatus(`${resolvedDescribePromises}/${objectList.size}`);
                         })
-                        .catch(err => {
-                            err.objectName = objectName;
-                            throw err;
+                        .catch(error => {
+                            error.objectName = objectName;
+                            throw error;
                         })
                 );
             }
 
-            await Promise.all(describePromises)
-                .then(() => {
-                    this.ux.stopSpinner('Done.');
-                })
-                .catch(err => {
-                    // Looks like the process is still waiting for other promises to resolve before exiting, how to avoid that ?
-                    this.ux.stopSpinner(err);
-                    throw new SfdxError(`Unable to get describe for object ${err.objectName}`);
-                });
+            await Promise.all(describePromises).catch(error => {
+                // Looks like the process is still waiting for other promises to resolve before exiting, how to avoid that ?
+                this.ux.stopSpinner(error);
+                throw new SfdxError(`Unable to get describe for object ${error.objectName}`);
+            });
+            this.ux.stopSpinner('Done.');
         }
 
         // do the objects
         for (const obj of objectList) {
             if (fs.existsSync(`${targetLocationObjects}/${obj}`)) {
-                existing = this.addObjectPerms(existing, obj);
+                existing = await this.addObjectPerms(existing, obj);
 
                 if (this.flags.field) {
                     existing = await this.addFieldPerms(existing, this.flags.object, this.flags.field);
@@ -167,39 +193,44 @@ export default class PermSetCreate extends SfdxCommand {
                     // we're doing tabs, and there is one, so add it to the permset
                     existing = this.addTab(existing, obj);
                 }
+
+                if (this.flags.recordtype) {
+                    existing = await this.addRecordTypePerms(existing, this.flags.object, this.flags.recordtype);
+                } else {
+                    // all the fields
+                    existing = await this.addAllRecordTypePermissions(existing, obj);
+                }
             } else {
-                this.ux.error(chalk.red(`Couldn\'t find that object in ${targetLocationObjects}/${this.flags.object}`));
+                this.ux.error(chalk.red(`Couldn't find that object in ${targetLocationObjects}/${this.flags.object}`));
             }
         }
 
-        existing = await fixExistingDollarSign(existing);
+        await fs.ensureDir(`${this.flags.directory}/permissionsets`);
 
-        fs.ensureDirSync(`${this.flags.directory}/permissionsets`);
-
-        // conver to xml and write out the file
-        const xml = jsToXml.parse('PermissionSet', existing, options.js2xmlStandardOptions);
-        fs.writeFileSync(targetFilename, xml);
-
+        await writeJSONasXML({
+            path: targetFilename,
+            json: existing,
+            type: 'PermissionSet'
+        });
         this.ux.log(chalk.green(`Permissions added in ${targetFilename}`));
         return existing; // for someone who wants the JSON?
     }
 
-    public addObjectPerms(existing, objectName: string) {
-        // tslint:disable-next-line:no-any
+    public async addObjectPerms(existing, objectName: string) {
         // make sure it the parent level objectPermissions[] exists
 
-        existing = setupArray(existing, 'objectPermissions');
+        const existingClone = await setupArray(await setupArray(existing, 'objectPermissions'), 'customMetadataTypeAccesses');
 
         if (
-            existing.objectPermissions.find(e => {
-                return e.object === objectName;
-            })
+            existingClone.objectPermissions.find(e => e.object === objectName) ||
+            existingClone.customMetadataTypeAccesses.find(e => e.name === objectName)
         ) {
             this.ux.log(`Object Permission already exists: ${objectName}.  Nothing to add.`);
-            return existing;
-        } else if (objectName.endsWith('__c')) {
+            return existingClone;
+        }
+        if (objectName.endsWith('__c')) {
             this.ux.log(`Added regular object perms for ${objectName}`);
-            existing.objectPermissions.push({
+            existingClone.objectPermissions.push({
                 allowCreate: 'true',
                 allowDelete: 'true',
                 allowEdit: 'true',
@@ -210,96 +241,100 @@ export default class PermSetCreate extends SfdxCommand {
             });
         } else if (objectName.endsWith('__e')) {
             this.ux.log(`Added object perms for platform event ${objectName}`);
-            existing.objectPermissions.push({
+            existingClone.objectPermissions.push({
                 allowCreate: 'true',
                 allowRead: 'true',
                 object: objectName
             });
         } else if (objectName.endsWith('__b')) {
             this.ux.log(`Added object perms for big object ${objectName}`);
-            existing.objectPermissions.push({
+            existingClone.objectPermissions.push({
                 allowCreate: 'true',
                 allowRead: 'true',
                 object: objectName
             });
+        } else if (objectName.endsWith('__mdt')) {
+            this.ux.log(`Added cmdt perms for ${objectName}`);
+            existingClone.customMetadataTypeAccesses.push({
+                enabled: 'true',
+                name: objectName
+            });
         }
-        return existing;
+        return existingClone;
     }
 
     public async addFieldPerms(existing, objectName: string, fieldName: string) {
-        // tslint:disable-next-line:no-any
         // make sure it the parent level objectPermissions[] exists
         const targetLocationObjects = `${this.flags.directory}/objects`;
 
-        existing = setupArray(existing, 'fieldPermissions');
+        const existingClone = await setupArray(existing, 'fieldPermissions');
 
         if (
-            existing.fieldPermissions.find(e => {
+            existingClone.fieldPermissions.find(e => {
                 return e.field === `${objectName}.${fieldName}`;
             })
         ) {
             this.ux.log(`Field Permission already exists: ${objectName}.${fieldName}.  Nothing to add.`);
-            return existing;
-        } else {
-            // get the field
-            if (this.flags.checkpermissionable) {
-                // Use org instead to know if field is creatable/updatable/permissionable
-                if (objectDescribe.has(objectName) && objectDescribe.get(objectName).has(fieldName)) {
-                    const fieldDescribe = objectDescribe.get(objectName).get(fieldName);
+            return existingClone;
+        }
+        // get the field
+        if (this.flags.checkpermissionable) {
+            // Use org instead to know if field is creatable/updatable/permissionable
+            if (objectDescribe.has(objectName) && objectDescribe.get(objectName).has(fieldName)) {
+                const fieldDescribe = objectDescribe.get(objectName).get(fieldName);
 
-                    // Check we can add permission, for instance mandatory fields are readable and editable anyway
-                    // Adding access rights to them will throw an error
-                    if (fieldDescribe.permissionable) {
-                        const editable = fieldDescribe.createable && fieldDescribe.updateable;
-                        existing.fieldPermissions.push({
-                            readable: 'true',
-                            editable: `${editable}`,
-                            field: `${objectName}.${fieldName}`
-                        });
-                        this.ux.log(`Read${editable ? '/Edit' : ''} permission added for field ${objectName}/${fieldName} `);
-                    }
-                } else {
-                    this.ux.warn(chalk.yellow(`field not found on org: ${objectName}/${fieldName}`));
-                }
-            } else if (fs.existsSync(`${targetLocationObjects}/${objectName}/fields/${fieldName}.field-meta.xml`)) {
-                // tslint:disable-next-line: no-any
-                const fieldJSON = <any>(
-                    await getParsed(await fs.readFile(`${targetLocationObjects}/${objectName}/fields/${fieldName}.field-meta.xml`))
-                );
-
-                if (this.flags.verbose) {
-                    this.ux.logJson(fieldJSON);
-                }
-
-                // Is it required at the DB level?
-                if (
-                    fieldJSON.CustomField.required === 'true' ||
-                    fieldJSON.CustomField.type === 'MasterDetail' ||
-                    !fieldJSON.CustomField.type ||
-                    fieldJSON.CustomField.fullName === 'OwnerId'
-                ) {
-                    this.ux.log(`required field ${objectName}/${fieldName} needs no permissions `);
-                } else if (fieldJSON.CustomField.type === 'Summary' || fieldJSON.CustomField.type === 'AutoNumber' || fieldJSON.CustomField.formula) {
-                    // these are read-only types
-                    existing.fieldPermissions.push({
+                // Check we can add permission, for instance mandatory fields are readable and editable anyway
+                // Adding access rights to them will throw an error
+                if (fieldDescribe.IsPermissionable) {
+                    const editable = fieldDescribe.IsCreatable && fieldDescribe.IsUpdatable;
+                    existingClone.fieldPermissions.push({
                         readable: 'true',
+                        editable: `${editable}`,
                         field: `${objectName}.${fieldName}`
                     });
-                    this.ux.log(`Read-only permission added for field ${objectName}/${fieldName} `);
-                } else {
-                    existing.fieldPermissions.push({
-                        readable: 'true',
-                        editable: 'true',
-                        field: `${objectName}.${fieldName}`
-                    });
-                    this.ux.log(`Read/Edit permission added for field ${objectName}/${fieldName} `);
+                    this.ux.log(`Read${editable ? '/Edit' : ''} permission added for field ${objectName}/${fieldName} `);
                 }
             } else {
-                throw new Error(`field not found: ${objectName}/${fieldName}`);
+                this.ux.warn(chalk.yellow(`field not found on org: ${objectName}/${fieldName}`));
+            }
+        } else if (fs.existsSync(`${targetLocationObjects}/${objectName}/fields/${fieldName}.field-meta.xml`)) {
+            // tslint:disable-next-line: no-any
+            const fieldJSON = (await getParsed(
+                await fs.readFile(`${targetLocationObjects}/${objectName}/fields/${fieldName}.field-meta.xml`)
+            )) as any;
+
+            if (this.flags.verbose) {
+                this.ux.logJson(fieldJSON);
             }
 
-            return existing;
+            // Is it required at the DB level?
+            if (
+                fieldJSON.CustomField.required === 'true' ||
+                fieldJSON.CustomField.type === 'MasterDetail' ||
+                !fieldJSON.CustomField.type ||
+                fieldJSON.CustomField.fullName === 'OwnerId'
+            ) {
+                this.ux.log(`required field ${objectName}/${fieldName} needs no permissions `);
+            } else if (fieldJSON.CustomField.type === 'Summary' || fieldJSON.CustomField.type === 'AutoNumber' || fieldJSON.CustomField.formula) {
+                // these are read-only types
+                existingClone.fieldPermissions.push({
+                    readable: 'true',
+                    field: `${objectName}.${fieldName}`
+                });
+                this.ux.log(`Read-only permission added for field ${objectName}/${fieldName} `);
+            } else {
+                existingClone.fieldPermissions.push({
+                    readable: 'true',
+                    editable: 'true',
+                    field: `${objectName}.${fieldName}`
+                });
+                this.ux.log(`Read/Edit permission added for field ${objectName}/${fieldName} `);
+            }
+        } else {
+            throw new Error(`field not found: ${objectName}/${fieldName}`);
         }
+
+        return existingClone;
     }
 
     // add field permissions
@@ -316,14 +351,102 @@ export default class PermSetCreate extends SfdxCommand {
         const fields = fs.readdirSync(fieldsLocation);
 
         // iterate through the field builder thing
+        let output = existing;
         for (const fieldFileName of fields) {
-            existing = await this.addFieldPerms(existing, objectName, fieldFileName.split('.')[0]);
+            output = await this.addFieldPerms(output, objectName, fieldFileName.split('.')[0]);
         }
 
-        return existing;
+        return output;
     }
 
-    public addTab(existing, objectName: string) {
+    public async addRecordTypePerms(existing, objectName: string, recordTypeName: string) {
+        const existingClone = await setupArray(existing, 'recordTypeVisibilities');
+
+        if (
+            existingClone.recordTypeVisibilities.find(e => {
+                return e.recordType === `${objectName}.${recordTypeName}`;
+            })
+        ) {
+            this.ux.log(`Record type Permission already exists: ${objectName}.${recordTypeName}.  Nothing to add.`);
+            return existingClone;
+        }
+
+        existingClone.recordTypeVisibilities.push({
+            recordType: `${objectName}.${recordTypeName}`,
+            visible: true
+        });
+
+        this.ux.log(`added record type permission for ${objectName}`);
+
+        return existingClone;
+    }
+
+    public async addAllRecordTypePermissions(existing, objectName: string) {
+        // get all the record types for that object
+        this.ux.log(`------ going to add all record types for ${objectName}`);
+        const recordTypesLocation = `${this.flags.directory}/objects/${objectName}/recordTypes`;
+
+        if (!fs.existsSync(recordTypesLocation)) {
+            this.ux.warn(chalk.yellow(`there is no recordTypes folder at ${recordTypesLocation}`));
+            return existing;
+        }
+
+        const recordTypes = await fs.readdir(recordTypesLocation);
+
+        let existingClone = { ...existing };
+        // iterate through the record types
+        for (const recordTypeFileName of recordTypes) {
+            existingClone = await this.addRecordTypePerms(existingClone, objectName, recordTypeFileName.replace('.recordType-meta.xml', ''));
+        }
+
+        return existingClone;
+    }
+
+    public async addApplicationPerms(existing, applicationName: string) {
+        let output = await setupArray(existing, 'applicationVisibilities');
+
+        if (
+            output.applicationVisibilities.find(e => {
+                return e.application === `${applicationName}`;
+            })
+        ) {
+            this.ux.log(`Application Permission already exists: ${applicationName}.  Nothing to add.`);
+            return output;
+        }
+        output = await setupArray(output, 'applicationVisibilities');
+
+        output.applicationVisibilities.push({
+            application: `${applicationName}`,
+            visible: true
+        });
+
+        this.ux.log(`added application permission for ${applicationName}`);
+
+        return output;
+    }
+
+    public async addAllApplicationPermissions(existing) {
+        // get all the applications
+        this.ux.log(`------ going to add all applications`);
+        const applicationsLocation = `${this.flags.directory}/applications`;
+
+        if (!fs.existsSync(applicationsLocation)) {
+            this.ux.warn(chalk.yellow(`there is no applications folder at ${applicationsLocation}`));
+            return existing;
+        }
+
+        const applications = fs.readdirSync(applicationsLocation);
+
+        // iterate through the applications
+        let output = existing;
+        for (const application of applications) {
+            output = await this.addApplicationPerms(output, application.replace('.app-meta.xml', ''));
+        }
+
+        return output;
+    }
+
+    public async addTab(existing, objectName: string) {
         // only __c and __x
 
         // this.ux.log(`doing tab for ${objectName}`);
@@ -333,25 +456,26 @@ export default class PermSetCreate extends SfdxCommand {
             return existing;
         }
 
-        existing = setupArray(existing, 'tabSettings');
+        const output = await setupArray(existing, 'tabSettings');
 
-        existing.tabSettings.push({
+        output.tabSettings.push({
             tab: objectName,
             visibility: 'Visible'
         });
 
         this.ux.log(`added tab permission for ${objectName}`);
 
-        // this.ux.log('existing, after all modification is');
-        // this.ux.logJson(existing);
-        return existing;
+        // this.ux.log('output, after all modification is');
+        // this.ux.logJson(output);
+        return output;
     }
 
     public async getFieldsPermissions(objectName: string) {
         const fieldsPermissions: Map<string, Field> = new Map<string, Field>();
-        const describeResult = await conn.sobject(objectName).describe();
+        const describeQuery = `Select Name,IsPermissionable,IsCreatable,IsUpdatable from EntityParticle where EntityDefinition.QualifiedApiName = '${objectName}'`;
+        const describeResult: ToolingAPIDescribeQueryResult = await conn.tooling.query(describeQuery);
 
-        for (const field of describeResult.fields) {
+        for (const field of describeResult.records) {
             fieldsPermissions.set(field.name, field);
         }
 

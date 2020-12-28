@@ -1,8 +1,8 @@
 /* tslint:disable:no-unused-expression */
-import fs = require('fs-extra');
+import { exec } from '@mshanemc/plugin-helpers';
 
-import { exec } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'testProjectRegularObjectCreate';
 const api = 'Corgi__c';
@@ -108,6 +108,26 @@ describe('shane:object:create (regular object flavor)', () => {
         const parsed = await testutils.getParsedXML(`${testProjectName}/force-app/main/default/objects/${api}/fields/${fieldAPI}.field-meta.xml`);
 
         expect(parsed.CustomField.type).toBe('Number');
+        expect(parsed.CustomField.label).toBe(fieldLabel);
+        expect(parsed.CustomField.fullName).toBe(fieldAPI);
+        expect(parsed.CustomField.precision).toBe('18');
+        expect(parsed.CustomField.scale).toBe('0');
+
+        await testutils.getParsedXML(`${testProjectName}/force-app/main/default/objects/${api}/${api}.object-meta.xml`);
+    });
+
+    it('creates a Currency field (18,0) on the Object', async () => {
+        const fieldAPI = 'Currency_Field__c';
+        const fieldLabel = 'Currency Field';
+
+        await exec(`sfdx shane:object:field --object ${api} --api ${fieldAPI} -n "${fieldLabel}" -t Currency  --scale 0 --precision 18`, {
+            cwd: testProjectName
+        });
+        expect(fs.existsSync(`${testProjectName}/force-app/main/default/objects/${api}/fields/${fieldAPI}.field-meta.xml`)).toBe(true);
+
+        const parsed = await testutils.getParsedXML(`${testProjectName}/force-app/main/default/objects/${api}/fields/${fieldAPI}.field-meta.xml`);
+
+        expect(parsed.CustomField.type).toBe('Currency');
         expect(parsed.CustomField.label).toBe(fieldLabel);
         expect(parsed.CustomField.fullName).toBe(fieldAPI);
         expect(parsed.CustomField.precision).toBe('18');
@@ -223,7 +243,74 @@ describe('shane:object:create (regular object flavor)', () => {
         await testutils.getParsedXML(`${testProjectName}/force-app/main/default/objects/${api}/${api}.object-meta.xml`);
     });
 
+    it('can create a lookup to Account', async () => {
+        const fieldAPI = 'Account__c';
+        const fieldLabel = 'Account Lookup';
+        const lookupobject = 'Account';
+        const relname = 'Kids';
+        const rellabel = 'The Kids';
+        const deleteconstraint = 'SetNull';
+        await exec(
+            `sfdx shane:object:field --object ${api} --api ${fieldAPI} -n "${fieldLabel}" -t Lookup --lookupobject ${lookupobject} --relname ${relname} --rellabel "${rellabel}" --deleteconstraint ${deleteconstraint}`,
+            {
+                cwd: testProjectName
+            }
+        );
+
+        expect(fs.existsSync(`${testProjectName}/force-app/main/default/objects/${api}/fields/${fieldAPI}.field-meta.xml`)).toBe(true);
+
+        const parsed = await testutils.getParsedXML(`${testProjectName}/force-app/main/default/objects/${api}/fields/${fieldAPI}.field-meta.xml`);
+
+        expect(parsed.CustomField.type).toBe('Lookup');
+        expect(parsed.CustomField.label).toBe(fieldLabel);
+        expect(parsed.CustomField.fullName).toBe(fieldAPI);
+        expect(parsed.CustomField.referenceTo).toBe(lookupobject);
+        expect(parsed.CustomField.relationshipLabel).toBe(rellabel);
+        expect(parsed.CustomField.relationshipName).toBe(relname);
+        expect(parsed.CustomField.deleteConstraint).toBe(deleteconstraint);
+
+        await testutils.getParsedXML(`${testProjectName}/force-app/main/default/objects/${api}/${api}.object-meta.xml`);
+    });
+
+    it('can create a recordType on the object', async () => {
+        const rtLabel = 'MyRecordType';
+
+        await exec(`sfdx shane:object:recordtype --object ${api} --label ${rtLabel}`, {
+            cwd: testProjectName
+        });
+
+        const createdFile = `${testProjectName}/force-app/main/default/objects/${api}/recordTypes/${rtLabel}.recordType-meta.xml`;
+        expect(fs.existsSync(createdFile)).toBe(true);
+
+        const parsed = await testutils.getParsedXML(createdFile);
+
+        expect(parsed.RecordType.active).toBe('true');
+        expect(parsed.RecordType.label).toBe(rtLabel);
+        expect(parsed.RecordType.fullName).toBe(rtLabel);
+    });
+
+    it('can create a recordType on the object with special Label', async () => {
+        const rtLabel = 'RT With Spaced Label';
+        const rtName = 'RTWithSpacedLabel';
+
+        await exec(`sfdx shane:object:recordtype --object ${api} --label "${rtLabel}"`, {
+            cwd: testProjectName
+        });
+
+        const createdFile = `${testProjectName}/force-app/main/default/objects/${api}/recordTypes/${rtName}.recordType-meta.xml`;
+        expect(fs.existsSync(createdFile)).toBe(true);
+
+        const parsed = await testutils.getParsedXML(createdFile);
+
+        expect(parsed.RecordType.active).toBe('true');
+        expect(parsed.RecordType.label).toBe(rtLabel);
+        expect(parsed.RecordType.fullName).toBe(rtName);
+    });
+
     it('can build a permset', async () => {
+        const rtLabel = 'MyRecordType';
+        const rt2Name = 'RTWithSpacedLabel';
+
         const permSetName = 'MyEventPerm';
         await exec(`sfdx shane:permset:create -n ${permSetName} -o ${api}`, { cwd: testProjectName });
 
@@ -238,9 +325,9 @@ describe('shane:object:create (regular object flavor)', () => {
         expect(parsed.PermissionSet.objectPermissions).toBeTruthy();
         expect(parsed.PermissionSet.objectPermissions.object).toBe(api);
 
-        expect(parsed.PermissionSet.fieldPermissions).toHaveLength(6);
+        expect(parsed.PermissionSet.fieldPermissions).toHaveLength(8);
 
-        // verify all the fields so far.  Required fields, and fileds required because they're indexed, shouldn't be included
+        // verify all the fields so far.  Required fields, and fields required because they're indexed, shouldn't be included
 
         expect(parsed.PermissionSet.fieldPermissions).toEqual(
             expect.arrayContaining([
@@ -249,7 +336,8 @@ describe('shane:object:create (regular object flavor)', () => {
                 expect.objectContaining({ readable: 'true', editable: 'true', field: `${api}.Email__c` }),
                 expect.objectContaining({ readable: 'true', editable: 'true', field: `${api}.Text_Area_Field__c` }),
                 expect.objectContaining({ readable: 'true', editable: 'true', field: `${api}.Phone__c` }),
-                expect.objectContaining({ readable: 'true', editable: 'true', field: `${api}.Checkbox_Field__c` })
+                expect.objectContaining({ readable: 'true', editable: 'true', field: `${api}.Checkbox_Field__c` }),
+                expect.objectContaining({ readable: 'true', editable: 'true', field: `${api}.Account__c` })
             ])
         );
 
@@ -259,6 +347,19 @@ describe('shane:object:create (regular object flavor)', () => {
                     readable: 'true',
                     editable: 'true',
                     field: `${api}.Required_Text_Field__c`
+                })
+            ])
+        );
+
+        expect(parsed.PermissionSet.recordTypeVisibilities).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    recordType: `${api}.${rtLabel}`,
+                    visible: 'true'
+                }),
+                expect.objectContaining({
+                    recordType: `${api}.${rt2Name}`,
+                    visible: 'true'
                 })
             ])
         );

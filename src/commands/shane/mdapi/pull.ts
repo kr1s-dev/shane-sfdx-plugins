@@ -1,10 +1,9 @@
 import { flags, SfdxCommand } from '@salesforce/command';
+import { retry } from '@lifeomic/attempt';
+import { exec } from '@mshanemc/plugin-helpers';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+
 import fs = require('fs-extra');
-
-import { exec } from '../../../shared/execProm';
-import * as options from '../../../shared/js2xmlStandardOptions';
-
-import jsToXml = require('js2xmlparser');
 
 const retryLimit = 5;
 
@@ -145,7 +144,7 @@ const StandardValueSets = [
     'WorkOrderStatus'
 ];
 
-const CrawlDown = [];
+// const CrawlDown = [];
 
 const pkgDir = 'pkgDirTemp';
 
@@ -172,35 +171,39 @@ export default class Pull extends SfdxCommand {
         reporting: flags.boolean({ description: booleanFlags.reporting.join(','), exclusive: ['all'] }),
 
         object: flags.string({ char: 'o', description: 'pull metadata for a single object', exclusive: ['all', 'schema'] }),
-        type: flags.string({ char: 't', description: 'pull only a specific type.  See the metadata api docs for type names', exclusive: ['all'] }),
+        type: flags.string({
+            char: 't',
+            description: 'pull only a specific type.  See the metadata api docs for type names',
+            exclusive: ['all']
+        }),
         // TODO: automation, security, reporting, i18n
         all: flags.boolean({
             description:
-                "Pulls just about everything.  Don't use this flag with any other subset of metadata.  Not recommended for really large metatadat orgs because it'll overflow stdout",
+                "Pulls just about everything.  Don't use this flag with any other subset of metadata.  Not recommended for really large metadata orgs because it'll overflow stdout",
             exclusive: ['code', 'perms', 'wave', 'schema', 'ui', 'object', 'type', 'reporting']
         })
     };
 
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         if (!this.flags.apiversion) {
             this.flags.apiversion = await this.org.retrieveMaxApiVersion();
         }
-
-        fs.ensureDirSync(pkgDir);
-
+        this.ux.startSpinner('asking your org about its metadata');
         const conn = this.org.getConnection();
+        const [describeResult] = await Promise.all([conn.metadata.describe(this.flags.apiversion), fs.ensureDir(pkgDir)]);
 
-        const describeResult = await conn.metadata.describe(this.flags.apiversion);
-
-        const mdTypes = [];
         const requestedTypes = getTypeList(this.flags);
         if (this.flags.type && requestedTypes.includes(this.flags.type)) {
             this.ux.warn(`type ${this.flags.type} is already selected`);
         }
-        const all = describeResult.metadataObjects;
+
+        const mdTypes = await Promise.all(
+            describeResult.metadataObjects
+                .filter(item => this.flags.all || requestedTypes.includes(item.xmlName) || this.flags.type === item.xmlName)
+                .map(item => this.mdTypeFromItem(item))
+        );
 
         // special case
         if (this.flags.object) {
@@ -210,97 +213,69 @@ export default class Pull extends SfdxCommand {
             });
         }
 
-        for (const item of all) {
-            // we actually want that time, OR we said we wanted it all
-            if (this.flags.all || requestedTypes.includes(item.xmlName) || this.flags.type === item.xmlName) {
-                // this.ux.logJson(item);
-                // special cases: objects that don't support *
-                if (item.xmlName === 'CustomObject') {
-                    mdTypes.push({
-                        members: standardObjects.concat(['*']),
-                        name: item.xmlName
-                    });
-                } else if (item.xmlName === 'StandardValueSet') {
-                    mdTypes.push({
-                        members: StandardValueSets,
-                        name: item.xmlName
-                    });
-                } else if (CrawlDown.includes(item.xmlName)) {
-                    for (const childName of item.childXmlNames) {
-                        await conn.metadata.list([{ type: childName, folder: null }], this.flags.apiversion);
-                        // console.log(parentList);
-                        // parentList.forEach( childItem => {
-                        //   this.ux.logJson(childItem);
-                        // });
-                    }
-                    // parentList.forEach( thing => this.ux.logJson(thing));
-                } else if (item.inFolder) {
-                    // get a list of all the folders for this type
-                    // this.ux.log(`checking item ${item.xmlName}`);
-                    const finalItemList = [];
-                    let folderListMetadata = await conn.metadata.list(
-                        [{ type: item.xmlName === 'EmailTemplate' ? 'EmailFolder' : `${item.xmlName}Folder`, folder: null }],
-                        this.flags.apiversion
-                    );
-
-                    if (folderListMetadata) {
-                        // correct in case it's single object instead of an array
-                        if (!Array.isArray(folderListMetadata)) {
-                            folderListMetadata = [folderListMetadata];
-                        }
-
-                        for (const folder of folderListMetadata) {
-                            finalItemList.push(folder.fullName);
-
-                            // this.ux.log(`looking in folder ${folder.fullName}`);
-                            const contents = await conn.metadata.list([{ type: item.xmlName, folder: folder.fullName }], this.flags.apiversion);
-                            if (contents && contents.length > 0) {
-                                contents.forEach(thing => {
-                                    // this.ux.logJson(thing);
-                                    finalItemList.push(thing.fullName);
-                                });
-                            } else {
-                                // this.ux.log(`no content for folder ${folder.fullName}`);
-                            }
-                        }
-
-                        // this.ux.logJson(finalItemList);
-
-                        mdTypes.push({
-                            members: finalItemList,
-                            name: item.xmlName
-                        });
-                    }
-                } else {
-                    mdTypes.push({
-                        members: '*',
-                        name: item.xmlName
-                    });
-                }
-            }
-        }
-
-        // this.ux.logJson(mdTypes);
-
         // in parallel, build out all the local package.xmls
-        this.ux.log('Going to retrieve all the metadata you asked for...this could take a while');
+        this.ux.setSpinnerStatus('Going to retrieve all the metadata you asked for...this could take a while');
 
         const retrieveResults = await Promise.all(mdTypes.map(mdType => localFilesystemBuild(mdType, this.flags.apiversion, this.org.getUsername())));
         this.ux.log(
             `Success: ${retrieveResults
                 .filter(result => result.status === 'success')
                 .map(result => result.type)
+                .sort()
                 .join(',')}`
         );
         this.ux.log(
             `Failure: ${retrieveResults
                 .filter(result => result.status === 'failure')
                 .map(result => result.type)
+                .sort()
                 .join(',')}`
         );
 
         await fs.remove(pkgDir);
         return retrieveResults;
+    }
+
+    async mdTypeFromItem(item): Promise<MdTypeForPackageXml> {
+        if (item.inFolder) {
+            // special handling for items in folders
+            const conn = this.org.getConnection();
+            let folderListMetadata = await conn.metadata.list(
+                [{ type: item.xmlName === 'EmailTemplate' ? 'EmailFolder' : `${item.xmlName}Folder`, folder: null }],
+                this.flags.apiversion
+            );
+            // force it to be an array with no undefined
+            folderListMetadata = !Array.isArray(folderListMetadata) ? [folderListMetadata].filter(i => i) : folderListMetadata;
+
+            const contentsOfEachFolder = (
+                await Promise.all(
+                    folderListMetadata.map(async folder =>
+                        conn.metadata.list([{ type: item.xmlName, folder: folder.fullName }], this.flags.apiversion)
+                    )
+                )
+            )
+                .filter(contents => contents && contents.length > 0)
+                .flat();
+
+            // return [...folderListMetadata.map(folder => folder.fullName), ...contentsOfEachFolder];
+            return {
+                name: item.xmlName,
+                members: [...folderListMetadata.map(folder => folder.fullName), ...contentsOfEachFolder.map(thing => thing.fullName)]
+            };
+        }
+        if (item.xmlName === 'CustomObject') {
+            return {
+                members: standardObjects.concat(['*']),
+                name: item.xmlName
+            };
+        }
+        if (item.xmlName === 'StandardValueSet') {
+            return {
+                members: StandardValueSets,
+                name: item.xmlName
+            };
+        }
+        return { members: '*', name: item.xmlName };
     }
 }
 
@@ -310,40 +285,44 @@ const localFilesystemBuild = async (mdType, apiversion, username) => {
     const targetFolder = `${pkgDir}/${mdType.name}`;
     await fs.ensureDir(targetFolder);
 
-    const packageJSON = {
-        '@': {
-            xmlns: 'http://soap.sforce.com/2006/04/metadata'
+    await writeJSONasXML({
+        path: `./${targetFolder}/package.xml`,
+        json: {
+            '@': {
+                xmlns: 'http://soap.sforce.com/2006/04/metadata'
+            },
+            types: Array.of({ name: mdType.name, members: mdType.members }),
+            version: apiversion
         },
-        types: Array.of({ name: mdType.name, members: mdType.members }),
-        version: apiversion
-    };
-
-    // create a packagexml for that type
-    const xml = jsToXml.parse('Package', packageJSON, options.js2xmlStandardOptions);
-    await fs.writeFile(`./${targetFolder}/package.xml`, xml);
+        type: 'Package'
+    });
 
     const retrieveCommand = `sfdx force:source:retrieve -x ${targetFolder}/package.xml -w 30 -u ${username} --json`;
 
-    // build in retry logic beause of flakiness on .sfdx/stash.json
-    let retries = 0;
-    while (retries < retryLimit) {
-        try {
+    // build in retry logic because of flakiness on .sfdx/stash.json
+    return retry(
+        async () => {
             await exec(retrieveCommand, { maxBuffer: 1000000 * 1024 });
             return { type: mdType.name, status: 'success' };
-        } catch (e) {
-            retries++;
+        },
+        {
+            maxAttempts: retryLimit,
+            async handleTimeout() {
+                return { type: mdType.name, status: 'failure' };
+            }
         }
-    }
-    return { type: mdType.name, status: 'failure' };
+    );
 };
 
 // takes the command flags and builds a list of the types that the user wants
-const getTypeList = theFlags => {
-    let outputTypes = [];
-    Object.keys(booleanFlags).forEach(flag => {
-        if (theFlags[flag]) {
-            outputTypes = [...outputTypes, ...booleanFlags[flag]];
-        }
-    });
-    return outputTypes;
+const getTypeList = (theFlags): string[] => {
+    return Object.keys(booleanFlags)
+        .map(flag => (theFlags[flag] ? booleanFlags[flag] : []))
+        .flat()
+        .filter(item => item);
 };
+
+interface MdTypeForPackageXml {
+    name: string;
+    members: string | string[];
+}

@@ -1,47 +1,37 @@
 import { UX } from '@salesforce/command';
+
+import { exec } from '@mshanemc/plugin-helpers';
+
 import fs = require('fs-extra');
 import unzipper = require('unzipper');
 
-import { exec } from '../shared/execProm';
-
-export async function retrieveUnzipConvertClean(tmpDir, retrieveCommand, target) {
+const retrieveUnzipConvertClean = async (tmpDir, retrieveCommand, target) => {
     const ux = await UX.create();
 
-    process.stdout.write('Starting retrieval...');
+    ux.startSpinner('Starting retrieval');
     await fs.ensureDirSync(tmpDir);
+    await exec(retrieveCommand, { maxBuffer: 1000000 * 1024 });
 
-    try {
-        await exec(retrieveCommand, { maxBuffer: 1000000 * 1024 });
-    } catch (e) {
-        ux.error(e);
-    }
+    ux.setSpinnerStatus('Unzipping');
+    await extract(tmpDir, ux);
 
-    process.stdout.write('done.  Unzipping...');
+    await exec(`sfdx force:mdapi:convert -r ./${tmpDir} -d ${target} --json`);
 
-    await extract(tmpDir);
-
-    try {
-        // const convertResult = await exec(`sfdx force:mdapi:convert -r ./${tmpDir} -d ${target} --json`);
-        await exec(`sfdx force:mdapi:convert -r ./${tmpDir} -d ${target} --json`);
-        // process.stdout.write(`done (converted ${JSON.parse(convertResult.stdout).result.length} items).  Cleaning up...`);
-        await fs.remove(tmpDir);
-    } catch (err) {
-        ux.errorJson(err);
-        // ux.error('Error from conversion--it may have been too much metadata');
-    }
-
+    ux.setSpinnerStatus('Cleaning up');
     await fs.remove(tmpDir);
-    process.stdout.write('Done!\n');
-}
+    ux.stopSpinner();
+};
 
-const extract = (location: string) => {
+const extract = (location: string, ux: UX) => {
     return new Promise((resolve, reject) => {
         fs.createReadStream(`./${location}/unpackaged.zip`)
             .pipe(unzipper.Extract({ path: `${location}` }))
             .on('close', () => {
-                process.stdout.write('done.  Converting...');
+                ux.setSpinnerStatus('Converting');
                 resolve();
             })
             .on('error', error => reject(error));
     });
 };
+
+export { retrieveUnzipConvertClean };

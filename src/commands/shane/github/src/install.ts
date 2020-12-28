@@ -1,8 +1,8 @@
 import { flags, SfdxCommand } from '@salesforce/command';
-import fs = require('fs-extra');
-import * as stripcolor from 'strip-color';
 
-import { exec } from '../../../../shared/execProm';
+import { exec, exec2JSON } from '@mshanemc/plugin-helpers';
+
+import fs = require('fs-extra');
 
 export default class GithubPackageInstall extends SfdxCommand {
     public static description = 'installs a package from github from mdapi src';
@@ -29,33 +29,47 @@ export default class GithubPackageInstall extends SfdxCommand {
 
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         await fs.remove(this.flags.repo);
         const repoUrl = `https://github.com/${this.flags.githubuser}/${this.flags.repo}`;
 
-        const gitResult = await exec(`git clone ${repoUrl}`);
-        this.ux.log(gitResult.stderr);
+        this.ux.startSpinner(`cloning from ${repoUrl}`);
+        await exec(`git clone ${repoUrl} --single-branch`);
+        this.ux.stopSpinner();
+
+        if (!fs.existsSync(`${this.flags.repo}/${this.flags.path}`)) {
+            if (!this.flags.keeplocally) {
+                await fs.remove(this.flags.repo);
+            }
+            throw new Error(`there is nothing at '${this.flags.path}'.  Check your --path flag`);
+        }
 
         if (this.flags.convert) {
+            this.ux.startSpinner(`converting source`);
             // convert to temp dir
             await exec(`sfdx force:source:convert -r ${this.flags.path} -d tmpSrcFolder`, { cwd: this.flags.repo });
             // delete the original source
             await fs.remove(`${this.flags.repo}/${this.flags.path}`);
             // put the converted source where the original was
             await fs.move(`${this.flags.repo}/tmpSrcFolder`, `${this.flags.repo}/${this.flags.path}`);
+            this.ux.stopSpinner();
         }
 
+        this.ux.startSpinner(`deploying to org`);
         // install in the org via mdapi
-        const installResult = await exec(
+        const installResult = await exec2JSON(
             `sfdx force:mdapi:deploy -d ${this.flags.repo}/${this.flags.path} -u ${this.org.getUsername()} -w 20 --json`
         );
-        // this.ux.logJson(JSON.parse(installResult.stdout));
+        this.ux.stopSpinner();
+
+        if (!this.flags.json) {
+            this.ux.logJson(installResult);
+        }
 
         if (!this.flags.keeplocally) {
             await fs.remove(this.flags.repo);
         }
 
-        return JSON.parse(stripcolor(installResult.stdout));
+        return installResult;
     }
 }

@@ -1,9 +1,9 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
-import request = require('request-promise-native');
-import * as stripcolor from 'strip-color';
 
-import { exec } from '../../../shared/execProm';
+import { exec2JSON } from '@mshanemc/plugin-helpers';
+
+import request = require('request-promise-native');
 
 const usernameURL = 'https://unique-username-generator.herokuapp.com/unique';
 
@@ -65,13 +65,13 @@ export default class CreateOrg extends SfdxCommand {
         setdefaultusername: flags.boolean({
             char: 's',
             description: 'set the created org as the default username'
-        })
+        }),
+        verbose: flags.builtin()
         // targetdevhubusername: flags.boolean({description: 'username or alias for the dev hub org; overrides default dev hub org' })
     };
 
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         // gets the unique username
         const usernameResult = await request.post({
@@ -88,46 +88,43 @@ export default class CreateOrg extends SfdxCommand {
 
         // optional value 	flags without defaults
         if (this.flags.clientid) {
-            command = command + ` -i ${this.flags.clientid}`;
+            command += ` -i ${this.flags.clientid}`;
         }
 
         if (this.flags.targetdevhubusername) {
-            command = command + ` -v ${this.flags.targetdevhubusername}`;
+            command += ` -v ${this.flags.targetdevhubusername}`;
         }
 
         if (this.flags.setalias) {
-            command = command + ` -a ${this.flags.setalias}`;
+            command += ` -a ${this.flags.setalias}`;
         }
 
         // optional boolean
         if (this.flags.noancestors) {
-            command = command + ' -c';
+            command += ' -c';
         }
 
         if (this.flags.nonamespace) {
-            command = command + ' -n';
+            command += ' -n';
         }
 
         if (this.flags.setdefaultusername) {
-            command = command + ' -s';
+            command += ' -s';
         }
 
         if (this.flags.setdefaultusername) {
-            command = command + ` username=${usernameResult.message}`;
+            command += ` username=${usernameResult.message}`;
         }
         this.ux.log(`executing ${command}`);
 
-        const response = await exec(command);
-        if (response.stdout) {
-            const success = JSON.parse(stripcolor(response.stdout));
-            if (success.status === 0) {
-                this.ux.log(chalk.green(`Org created with id ${success.result.orgId} and username ${success.result.username} `));
-            } else {
-                this.ux.log(chalk.red(response.stderr));
-            }
-            return success.result;
-        } else {
-            return JSON.parse(response.stdout);
+        const response = await exec2JSON(command);
+        if (!this.flags.json && this.flags.verbose) {
+            this.ux.logJson(response);
         }
+        if (response.status === 0) {
+            this.ux.log(chalk.green(`Org created with id ${response.result.orgId} and username ${response.result.username} `));
+            return response.result;
+        }
+        throw new Error(response.message);
     }
 }

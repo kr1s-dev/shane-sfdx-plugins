@@ -1,6 +1,6 @@
 /* tslint:disable:no-unused-expression */
 import { flags, SfdxCommand } from '@salesforce/command';
-import { CommunitiesRestResult } from './../../../shared/typeDefs';
+import { CommunitiesRestResult } from '../../../shared/typeDefs';
 
 export default class CommunityPublish extends SfdxCommand {
     public static description = 'Publish a community using a headless browser';
@@ -26,7 +26,7 @@ export default class CommunityPublish extends SfdxCommand {
     // tslint:disable-next-line: no-any
     public async run(): Promise<any> {
         const conn = this.org.getConnection();
-        const communitiesList = <CommunitiesRestResult>(<unknown>await conn.request(`${conn.baseUrl()}/connect/communities/`));
+        const communitiesList = ((await conn.request(`${conn.baseUrl()}/connect/communities/`)) as unknown) as CommunitiesRestResult;
 
         const filteredCommunities = communitiesList.communities
             .filter(c => c.siteAsContainerEnabled) // exclude sites without a community
@@ -37,23 +37,20 @@ export default class CommunityPublish extends SfdxCommand {
             if (this.flags.name) {
                 commError = `No communities matching "${this.flags.name}" in found communities [${communitiesList.communities.map(c => c.name)}]`;
             }
-            throw Error(commError);
+            throw new Error(commError);
         }
 
-        const promises = [];
         this.ux.startSpinner(`Publishing communities via rest api [${filteredCommunities.map(c => c.name)}]...`);
 
-        for (const c of filteredCommunities) {
-            const publishUrl = `${conn.baseUrl()}/connect/communities/${c.id}/publish`;
-            promises.push(
+        const publishResults = await Promise.all(
+            filteredCommunities.map(c =>
                 conn.request({
                     method: 'POST',
-                    url: publishUrl,
+                    url: `${conn.baseUrl()}/connect/communities/${c.id}/publish`,
                     body: '{}'
                 })
-            );
-        }
-        const publishResults = await Promise.all(promises);
+            )
+        );
 
         this.ux.stopSpinner('done');
         return publishResults;

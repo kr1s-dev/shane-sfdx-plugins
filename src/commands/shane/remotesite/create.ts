@@ -1,10 +1,10 @@
 import { flags, SfdxCommand } from '@salesforce/command';
-import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
-
-import * as options from '../../../shared/js2xmlStandardOptions';
-
 import chalk from 'chalk';
+
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { removeTrailingSlash } from '../../../shared/flagParsing';
+
+import fs = require('fs-extra');
 
 export default class RemoteSite extends SfdxCommand {
     public static description = "create a remote site setting in the local source.  Push it when you're done";
@@ -29,39 +29,32 @@ export default class RemoteSite extends SfdxCommand {
         target: flags.directory({
             char: 't',
             default: 'force-app/main/default',
-            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default"
+            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default",
+            parse: input => removeTrailingSlash(input)
         })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         if (this.flags.name.includes(' ')) {
-            this.ux.error(chalk.red('spaces are not allowed in the name'));
+            throw new Error('spaces are not allowed in the name');
         }
 
-        // remove trailing slash if someone entered it
-        if (this.flags.target.endsWith('/')) {
-            this.flags.target = this.flags.target.substring(0, this.flags.target.length - 1);
-        }
-
-        fs.ensureDirSync(`${this.flags.target}/remoteSiteSettings`);
-
-        const settingJSON = {
-            '@': {
-                xmlns: 'http://soap.sforce.com/2006/04/metadata'
-            },
-            url: this.flags.url,
-            disableProtocolSecurity: false,
-            isActive: true,
-            description: this.flags.description
-        };
-
-        const xml = jsToXml.parse('RemoteSiteSetting', settingJSON, options.js2xmlStandardOptions);
-
-        fs.writeFileSync(`${this.flags.target}/remoteSiteSettings/${this.flags.name}.remoteSite-meta.xml`, xml);
+        await fs.ensureDir(`${this.flags.target}/remoteSiteSettings`);
+        await writeJSONasXML({
+            path: `${this.flags.target}/remoteSiteSettings/${this.flags.name}.remoteSite-meta.xml`,
+            type: 'RemoteSiteSetting',
+            json: {
+                '@': {
+                    xmlns: 'http://soap.sforce.com/2006/04/metadata'
+                },
+                url: this.flags.url,
+                disableProtocolSecurity: false,
+                isActive: true,
+                description: this.flags.description
+            }
+        });
 
         this.ux.log(chalk.green('Remote site created locally'));
     }

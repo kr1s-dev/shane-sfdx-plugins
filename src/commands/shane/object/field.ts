@@ -1,16 +1,36 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
 import cli from 'cli-ux';
+
+import { fixExistingDollarSign, writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { getParsed } from '@mshanemc/plugin-helpers/dist/xml2jsAsync';
+import { FieldMeta } from '../../../shared/typeDefs';
+
 import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
 
-import { fixExistingDollarSign } from '../../../shared/getExisting';
-import * as options from '../../../shared/js2xmlStandardOptions';
-import { getParsed } from '../../../shared/xml2jsAsync';
+const SupportedTypesB = ['Text', 'Number', 'DateTime', 'Lookup', 'LongTextArea'];
+const SupportedTypesE = ['Text', 'Number', 'DateTime', 'Date', 'LongTextArea', 'Checkbox'];
+const SupportedTypesC = [
+    'Text',
+    'Number',
+    'DateTime',
+    'Date',
+    'Time',
+    'LongTextArea',
+    'Checkbox',
+    'Url',
+    'Email',
+    'Phone',
+    'Currency',
+    'Picklist',
+    'Html',
+    'Location',
+    'Lookup',
+    'MasterDetail'
+];
+const SupportedTypesMDT = ['Text', 'LongTextArea', 'Number', 'DateTime', 'Date', 'Checkbox', 'Url', 'Email', 'Phone', 'Picklist'];
 
-const SupportedTypes__b = ['Text', 'Number', 'DateTime', 'Lookup', 'LongTextArea'];
-const SupportedTypes__e = ['Text', 'Number', 'DateTime', 'Date', 'LongTextArea', 'Checkbox'];
-const SupportedTypes__c = ['Text', 'Number', 'DateTime', 'Date', 'LongTextArea', 'Checkbox', 'Url', 'Email', 'Phone'];
+const deleteConstraintOptions = ['SetNull', 'Restrict', 'Cascade'];
 
 export default class FieldCreate extends SfdxCommand {
     public static description = 'create or add fields to an existing object';
@@ -37,12 +57,14 @@ export default class FieldCreate extends SfdxCommand {
         api: flags.string({ char: 'a', description: 'API name for the field' }),
         type: flags.string({
             char: 't',
-            description: `field type.  Big Objects: ${SupportedTypes__b.join(',')}.  Events: ${SupportedTypes__e.join(
+            description: `field type.  Big Objects: ${SupportedTypesB.join(',')}.  Events: ${SupportedTypesE.join(
                 ','
-            )}.  Regular Objects: ${SupportedTypes__c.join(',')}`
+            )}.  Regular Objects: ${SupportedTypesC.join(',')}`
         }),
         description: flags.string({ description: "optional description for the field so you remember what it's for next year" }),
-        default: flags.string({ description: 'required for checkbox fields.  Express in Salesforce formula language (good luck with that!)' }),
+        default: flags.string({
+            description: 'required for checkbox fields.  Express in Salesforce formula language (good luck with that!)'
+        }),
         required: flags.boolean({ char: 'r', description: 'field is required' }),
         unique: flags.boolean({ char: 'u', description: 'field must be unique' }),
         externalid: flags.boolean({ description: 'use as an external id' }),
@@ -55,7 +77,16 @@ export default class FieldCreate extends SfdxCommand {
         precision: flags.integer({ description: 'maximum allowed digits of a number, including whole and decimal places' }),
 
         lookupobject: flags.string({ description: 'API name of the object the lookup goes to' }),
-        relname: flags.string({ description: 'API name for the lookup relationship' }),
+        relname: flags.string({ description: 'API name for the child relationship' }),
+        rellabel: flags.string({ description: 'label for the child relationship (appears on related lists)' }),
+
+        deleteconstraint: flags.string({ description: 'delete behavior', options: deleteConstraintOptions }),
+
+        reparentable: flags.boolean({ description: 'the master detail is parentable' }),
+        writerequiresmasterread: flags.boolean({ description: 'the master detail is parentable' }),
+
+        picklistvalues: flags.array({ description: 'values for the picklist' }),
+        picklistdefaultfirst: flags.boolean({ description: 'use the first value in the picklist as the default' }),
 
         // big object index handling
         indexposition: flags.integer({
@@ -75,10 +106,8 @@ export default class FieldCreate extends SfdxCommand {
         })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         if (!this.flags.object) {
             this.flags.object = await cli.prompt('object API name?');
@@ -87,8 +116,7 @@ export default class FieldCreate extends SfdxCommand {
         const objectMetaPath = `${this.flags.directory}/objects/${this.flags.object}/${this.flags.object}.object-meta.xml`;
         // does it exist?
         if (!fs.existsSync(objectMetaPath)) {
-            this.ux.error(chalk.red(`object not found: ${objectMetaPath}`));
-            return;
+            throw new Error(`object not found: ${objectMetaPath}`);
         }
 
         if (!this.flags.name) {
@@ -96,71 +124,56 @@ export default class FieldCreate extends SfdxCommand {
         }
 
         if (!this.flags.api) {
-            this.flags.api = await cli.prompt('API name for your new field?', { default: `${this.flags.name.replace(/ /g, '_')}__c` });
+            this.flags.api = await cli.prompt('API name for your new field?', {
+                default: `${this.flags.name.replace(/ /g, '_').replace(/-/g, '_')}__c`
+            });
         }
 
         // be helpful
         if (!this.flags.api.endsWith('__c')) {
-            this.flags.api = this.flags.api + '__c';
+            this.flags.api = `${this.flags.api}__c`;
         }
 
         const fieldsFolderPath = `${this.flags.directory}/objects/${this.flags.object}/fields`;
-        const fieldMetaPath = `${this.flags.directory}/objects/${this.flags.object}/fields/${this.flags.api}.field-meta.xml`;
+        const fieldMetaPath = `${fieldsFolderPath}/${this.flags.api}.field-meta.xml`;
 
-        fs.ensureDirSync(fieldsFolderPath);
+        await fs.ensureDir(fieldsFolderPath);
 
         if (fs.existsSync(fieldMetaPath)) {
             this.ux.error(chalk.red(`field already exists ${fieldMetaPath}`));
             return;
         }
 
-        interface FieldMeta {
-            label: string;
-            // tslint:disable-next-line:no-reserved-keywords
-            type: string;
-            fullName: string;
-            defaultValue?: string;
-            description?: string;
-            inlineHelpText?: string;
-            required?: boolean;
-            unique?: boolean;
-            externalId?: boolean;
-            length?: number;
-            scale?: number;
-            precision?: number;
-            relationshipLabel?: string;
-            relationshipName?: string;
-            referenceTo?: string;
-            trackHistory?: boolean;
-            visibleLines?: number;
+        while (this.flags.object.endsWith('__mdt') && !SupportedTypesMDT.includes(this.flags.type)) {
+            // eslint-disable-next-line no-await-in-loop
+            this.flags.type = await cli.prompt(`Type (${SupportedTypesMDT.join(',')})?`, { default: 'Text' });
         }
 
-        while (this.flags.object.endsWith('__b') && !SupportedTypes__b.includes(this.flags.type)) {
-            this.flags.type = await cli.prompt(`Type (${SupportedTypes__b.join(',')})?`, { default: 'Text' });
+        while (this.flags.object.endsWith('__b') && !SupportedTypesB.includes(this.flags.type)) {
+            // eslint-disable-next-line no-await-in-loop
+            this.flags.type = await cli.prompt(`Type (${SupportedTypesB.join(',')})?`, { default: 'Text' });
         }
 
-        while (this.flags.object.endsWith('__e') && !SupportedTypes__e.includes(this.flags.type)) {
-            this.flags.type = await cli.prompt(`Type (${SupportedTypes__e.join(',')})?`, { default: 'Text' });
+        while (this.flags.object.endsWith('__e') && !SupportedTypesE.includes(this.flags.type)) {
+            // eslint-disable-next-line no-await-in-loop
+            this.flags.type = await cli.prompt(`Type (${SupportedTypesE.join(',')})?`, { default: 'Text' });
         }
 
-        while (this.flags.object.endsWith('__c') && !SupportedTypes__c.includes(this.flags.type)) {
-            this.flags.type = await cli.prompt(`Type (${SupportedTypes__c.join(',')})?`, { default: 'Text' });
+        while (this.flags.object.endsWith('__c') && !SupportedTypesC.includes(this.flags.type)) {
+            // eslint-disable-next-line no-await-in-loop
+            this.flags.type = await cli.prompt(`Type (${SupportedTypesC.join(',')})?`, { default: 'Text' });
         }
 
         // we have at least these two fields now
-        const outputJSON = <FieldMeta>{
+        const outputJSON = {
             label: this.flags.name,
             type: this.flags.type,
             fullName: this.flags.api
-        };
+        } as FieldMeta;
 
         // type specific values
         if (this.flags.type === 'Text') {
-            if (this.flags.length >= 0) {
-                outputJSON.length = this.flags.length;
-            } else {
-                outputJSON.length = await cli.prompt('Length? (Max 255)', { default: '255' });
-            }
+            outputJSON.length = this.flags.length >= 0 ? this.flags.length : await cli.prompt('Length? (Max 255)', { default: '255' });
         }
 
         if (this.flags.type === 'Checkbox') {
@@ -168,35 +181,91 @@ export default class FieldCreate extends SfdxCommand {
         }
 
         if (this.flags.type === 'LongTextArea') {
-            if (this.flags.length >= 0) {
-                outputJSON.length = this.flags.length;
-            } else {
-                outputJSON.length = await cli.prompt('Length? (Max 131072)', { default: '131072' });
-            }
+            outputJSON.length = this.flags.length >= 0 ? this.flags.length : await cli.prompt('Length? (Max 131072)', { default: '131072' });
             outputJSON.visibleLines = 3;
         }
 
-        if (this.flags.type === 'Lookup') {
-            outputJSON.referenceTo = this.flags.lookupobject || (await cli.prompt('What object for Lookup field? ex: Account, Something__c'));
-            outputJSON.relationshipName = this.flags.relname || (await cli.prompt('relationship api name?'));
-            outputJSON.relationshipLabel = outputJSON.relationshipName;
+        if (this.flags.type === 'Html') {
+            outputJSON.length = this.flags.length >= 0 ? this.flags.length : await cli.prompt('Length? (Max 131072)', { default: '131072' });
+            outputJSON.visibleLines = 5;
         }
 
-        if (this.flags.type === 'Number') {
-            if (this.flags.scale >= 0) {
-                outputJSON.scale = this.flags.scale;
+        if (this.flags.type === 'Lookup' || this.flags.type === 'MasterDetail') {
+            outputJSON.referenceTo = this.flags.lookupobject || (await cli.prompt('API name of the parent object ex: Account, Something__c'));
+            outputJSON.relationshipName = this.flags.relname || (await cli.prompt('Child relationship api name?'));
+            outputJSON.relationshipLabel =
+                this.flags.rellabel || (await cli.prompt('Child relationship label?', { default: outputJSON.relationshipName }));
+        }
+        if (this.flags.type === 'Lookup' && this.flags.object.endsWith('__c')) {
+            outputJSON.deleteConstraint = this.flags.interactive
+                ? this.flags.deleteconstraint ||
+                  (await cli.prompt(`What should happen to this field when the parent is deleted? (${deleteConstraintOptions.join(',')})`, {
+                      default: 'SetNull'
+                  }))
+                : 'SetNull';
+        }
+        if (this.flags.type === 'MasterDetail') {
+            outputJSON.reparentableMasterDetail = this.flags.interactive
+                ? this.flags.reparentable || (await cli.confirm('Allow reparenting? (y/n)'))
+                : this.flags.reparentable ?? false;
+            outputJSON.writeRequiresMasterRead = this.flags.interactive
+                ? this.flags.writerequiresmasterread || (await cli.confirm('Allow write access if parent is readable (y/n)'))
+                : this.flags.writerequiresmasterread ?? false;
+            outputJSON.relationshipOrder = (await masterDetailExists(fieldsFolderPath)) ? 1 : 0; // default, unless we find another one in the files
+        }
+
+        if (this.flags.type === 'Number' || this.flags.type === 'Currency') {
+            outputJSON.scale = this.flags.scale >= 0 ? this.flags.scale : await cli.prompt('how many decimal places (scale)?', { default: '0' });
+            outputJSON.precision =
+                this.flags.precision >= 0
+                    ? this.flags.precision
+                    : await cli.prompt(
+                          `how many total digits, including those ${outputJSON.scale} decimal places? (precision, MAX ${18 - outputJSON.scale})?`,
+                          {
+                              default: `${18 - outputJSON.scale}`
+                          }
+                      );
+        }
+
+        if (this.flags.type === 'Location') {
+            outputJSON.scale = this.flags.scale >= 0 ? this.flags.scale : await cli.prompt('how many decimal places (scale)?', { default: '4' });
+            outputJSON.displayLocationInDecimal = true;
+        }
+
+        if (this.flags.type === 'Picklist') {
+            let values = [];
+            // let defaultValue;
+
+            if (this.flags.picklistvalues) {
+                values = this.flags.picklistvalues;
             } else {
-                outputJSON.scale = await cli.prompt('how many decimal places (scale)?', { default: '0' });
+                this.ux.log(`OK, let's build a picklist.  Values will appear in the order entered.`);
+                let keepAsking = true;
+                const stopWord = 'STAHP';
+                while (keepAsking) {
+                    // eslint-disable-next-line no-await-in-loop
+                    const response = await cli.prompt(`Enter a value to add to picklist, or say ${stopWord} to stop`);
+                    if (response !== stopWord) {
+                        values.push(response);
+                    } else {
+                        keepAsking = false;
+                    }
+                }
+                if (!this.flags.picklistdefaultfirst) {
+                    this.flags.picklistdefaultfirst = await cli.confirm('use the first value as default? (y/n)');
+                }
             }
 
-            if (this.flags.precision >= 0) {
-                outputJSON.precision = this.flags.precision;
-            } else {
-                outputJSON.precision = await cli.prompt(
-                    `how many total digits, including those ${outputJSON.scale} decimal places? (precision, MAX ${18 - outputJSON.scale})?`,
-                    { default: `${18 - outputJSON.scale}` }
-                );
-            }
+            outputJSON.valueSet = {
+                valueSetDefinition: {
+                    value: values.map((value, index) => ({
+                        fullName: value,
+                        label: value,
+                        default: ((this.flags.picklistdefaultfirst ?? false) && index === 0) ?? false
+                    })),
+                    sorted: true
+                }
+            };
         }
 
         // optional stuff
@@ -221,7 +290,9 @@ export default class FieldCreate extends SfdxCommand {
         if (this.flags.description) {
             outputJSON.description = this.flags.description;
         } else if (this.flags.interactive) {
-            outputJSON.description = await cli.prompt('description?  Be nice to your future self!', { required: false });
+            outputJSON.description = await cli.prompt('description?  Be nice to your future self!', {
+                required: false
+            });
         }
 
         if (this.flags.helptext) {
@@ -241,8 +312,7 @@ export default class FieldCreate extends SfdxCommand {
 
         // dealing with big object indexes
         if (this.flags.object.includes('__b') && !this.flags.noindex) {
-            const filePath = `${this.flags.directory}/objects/${this.flags.object}/${this.flags.object}.object-meta.xml`;
-            const fileRead = await getParsed(await fs.readFile(filePath), true);
+            const fileRead = await getParsed(await fs.readFile(objectMetaPath), true);
 
             this.ux.logJson(fileRead);
             let existing = fileRead.CustomObject;
@@ -251,6 +321,7 @@ export default class FieldCreate extends SfdxCommand {
             // this.ux.log(existing.indexes[0].fields);
 
             while (!(this.flags.indexposition > -1) && !this.flags.indexappend && !this.flags.noindex) {
+                // eslint-disable-next-line no-await-in-loop
                 const response = await cli.prompt(
                     `where in the big object index? Enter an array key (0 is first.  There are already ${existing.indexes[0].fields.length}) or the word LAST (add to the end) or NO (don't index this field)`,
                     { default: 'LAST' }
@@ -260,10 +331,8 @@ export default class FieldCreate extends SfdxCommand {
                     // this.flags.indexappend = true;
                 } else if (response === 'LAST') {
                     this.flags.indexappend = true;
-                } else {
-                    if (this.flags.indexposition >= 0) {
-                        this.flags.indexposition = response;
-                    }
+                } else if (this.flags.indexposition >= 0) {
+                    this.flags.indexposition = response;
                 }
             }
 
@@ -277,7 +346,10 @@ export default class FieldCreate extends SfdxCommand {
             // we were told what to do
             while (this.flags.indexdirection !== 'ASC' && this.flags.indexdirection !== 'DESC') {
                 outputJSON.required = true;
-                this.flags.indexdirection = await cli.prompt('which direction should this index be sorted? (ASC, DESC)', { default: 'DESC' });
+                // eslint-disable-next-line no-await-in-loop
+                this.flags.indexdirection = await cli.prompt('which direction should this index be sorted? (ASC, DESC)', {
+                    default: 'DESC'
+                });
             }
 
             existing = await fixExistingDollarSign(existing);
@@ -295,22 +367,49 @@ export default class FieldCreate extends SfdxCommand {
 
             const position = this.flags.indexposition || existing.indexes[0].fields.length - 1;
 
-            // conver to xml and write out the file
-            const objXml = jsToXml.parse('CustomObject', existing, options.js2xmlStandardOptions);
-            fs.writeFileSync(filePath, objXml);
+            // convert to xml and write out the file
+            await writeJSONasXML({
+                type: 'CustomObject',
+                path: objectMetaPath,
+                json: existing
+            });
 
             this.ux.log(chalk.green(`Index for ${this.flags.api} added as [${position}] of ${existing.indexes[0].fields.length}`));
         }
 
         // write out the field xml
-        const xml = jsToXml.parse('CustomField', outputJSON, options.js2xmlStandardOptions);
-
-        fs.writeFileSync(fieldMetaPath, xml);
-
+        // const xml = jsToXml.parse('CustomField', outputJSON, options.js2xmlStandardOptions);
+        await writeJSONasXML({
+            type: 'CustomField',
+            path: fieldMetaPath,
+            json: outputJSON
+        });
         this.ux.log(
             `Created ${chalk.green(fieldMetaPath)}.  Add perms with ${chalk.cyan(
                 `sfdx shane:permset:create -o ${this.flags.object} -f ${this.flags.api} -n yourPermSetName`
             )}`
         );
+
+        if (this.flags.type === 'MasterDetail') {
+            // modify sharing on existing object
+            const existingObject = (await getParsed(await fs.readFile(objectMetaPath), true)).CustomObject;
+            existingObject.externalSharingModel = 'ControlledByParent';
+            existingObject.sharingModel = 'ControlledByParent';
+            await writeJSONasXML({
+                type: 'CustomObject',
+                path: objectMetaPath,
+                json: await fixExistingDollarSign(existingObject)
+            });
+            this.ux.log(`Modified sharing model on ${objectMetaPath}.`);
+        }
     }
 }
+
+const masterDetailExists = async fieldsFolderPath => {
+    return (
+        await Promise.all(
+            (await fs.readdir(fieldsFolderPath)) // returns list of filenames
+                .map(async fieldFile => getParsed(await fs.readFile(`${fieldsFolderPath}/${fieldFile}`), false)) // returns json objects
+        )
+    ).some(fileAsJSON => fileAsJSON.CustomField.type === 'MasterDetail'); // there is already some master-detail
+};

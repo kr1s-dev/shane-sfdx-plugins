@@ -1,10 +1,10 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
-import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
 
-import { fixExistingDollarSign, getExisting } from '../../../shared/getExisting';
-import * as options from '../../../shared/js2xmlStandardOptions';
+import { getExisting } from '@mshanemc/plugin-helpers/dist/getExisting';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+
+import fs = require('fs-extra');
 
 export default class FATUpdate extends SfdxCommand {
     public static description =
@@ -39,42 +39,35 @@ export default class FATUpdate extends SfdxCommand {
 
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         const targetFolder = `${this.flags.directory}/objects/${this.flags.object}`;
         const targetFilename = `${targetFolder}/${this.flags.object}.object-meta.xml`;
 
         if (!fs.existsSync(targetFolder)) {
-            this.ux.error(`Folder does not exist: ${targetFolder}.  Pull object schema using sfdx shane:mdapi:pull -o ${this.flags.object}`);
-            return;
+            throw new Error(`Folder does not exist: ${targetFolder}.  Pull object schema using sfdx shane:mdapi:pull -o ${this.flags.object}`);
         }
 
         if (!fs.existsSync(targetFilename)) {
-            this.ux.error(`Object does not exist in local source: ${targetFilename}.  Pull object schema using sfdx shane:mdapi:pull -s`);
-            return;
+            throw new Error(`Object does not exist in local source: ${targetFilename}.  Pull object schema using sfdx shane:mdapi:pull -s`);
         }
 
         let existing = await getExisting(targetFilename, 'CustomObject');
-        existing.enableHistory = true;
+        existing = {
+            ...existing,
+            enableHistory: true,
+            historyRetentionPolicy: {
+                ...existing.historyRetentionPolicy,
+                archiveAfterMonths: this.flags.archiveaftermonths ?? existing.historyRetentionPolicy.archiveAfterMonths ?? undefined,
+                archiveRetentionYears: this.flags.archiveretentionyears ?? existing.historyRetentionPolicy.archiveRetentionYears ?? undefined,
+                description: this.flags.description ?? existing.historyRetentionPolicy.description ?? undefined
+            }
+        };
 
-        existing.historyRetentionPolicy = existing.historyRetentionPolicy || {};
-
-        if (this.flags.archiveaftermonths >= 0) {
-            existing.historyRetentionPolicy.archiveAfterMonths = this.flags.archiveaftermonths;
-        }
-        if (this.flags.archiveretentionyears >= 0) {
-            existing.historyRetentionPolicy.archiveRetentionYears = this.flags.archiveretentionyears;
-        }
-        if (this.flags.description) {
-            existing.historyRetentionPolicy.description = this.flags.description;
-        }
-
-        existing = await fixExistingDollarSign(existing);
-
-        // convert to xml and write out the file
-        const xml = jsToXml.parse('CustomObject', existing, options.js2xmlStandardOptions);
-        fs.writeFileSync(targetFilename, xml);
-
+        await writeJSONasXML({
+            json: existing,
+            path: targetFilename,
+            type: 'CustomObject'
+        });
         this.ux.log(chalk.green(`Updated ${targetFilename} in local source`));
         return existing;
     }

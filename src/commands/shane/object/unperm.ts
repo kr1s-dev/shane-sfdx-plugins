@@ -1,12 +1,11 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
+
+import { getExisting } from '@mshanemc/plugin-helpers/dist/getExisting';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { setupArray } from '@mshanemc/plugin-helpers/dist/setupArray';
+
 import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
-
-import { fixExistingDollarSign, getExisting } from '../../../shared/getExisting';
-import { setupArray } from '../../../shared/setupArray';
-
-import * as options from '../../../shared/js2xmlStandardOptions';
 
 export default class UnPerm extends SfdxCommand {
     public static description = 'remove references to an object from profiles/permsets (all or a specific one)';
@@ -27,28 +26,19 @@ export default class UnPerm extends SfdxCommand {
         specific: flags.string({ char: 's', description: 'specify a profile or permset by name to only remove it from that one' })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         const profileDirectory = `${this.flags.directory}/profiles`;
         const permsetDirectory = `${this.flags.directory}/permissionsets`;
 
         if (!this.flags.specific) {
             // just do all of them
-            const profiles = fs.readdirSync(profileDirectory);
-            const permsets = fs.readdirSync(permsetDirectory);
-
-            for (const p of profiles) {
-                const targetFilename = `${profileDirectory}/${p}`;
-                await this.removePerms(targetFilename, 'Profile');
-            }
-
-            for (const p of permsets) {
-                const targetFilename = `${permsetDirectory}/${p}`;
-                await this.removePerms(targetFilename, 'PermissionSet');
-            }
+            const [profiles, permsets] = await Promise.all([fs.readdir(profileDirectory), fs.readdir(permsetDirectory)]);
+            await Promise.all([
+                ...profiles.map(profile => this.removePerms(`${profileDirectory}/${profile}`, 'Profile')),
+                ...permsets.map(permSet => this.removePerms(`${permsetDirectory}/${permSet}`, 'PermissionSet'))
+            ]);
         } else if (this.flags.specific) {
             // ok, what kind is it and does it exist?
             if (fs.existsSync(`${profileDirectory}/${this.flags.specific}`)) {
@@ -62,15 +52,13 @@ export default class UnPerm extends SfdxCommand {
     }
 
     public async removePerms(targetFilename: string, metadataType: string): Promise<void> {
-        // tslint:disable-next-line:no-any
-
         let existing = await getExisting(targetFilename, metadataType);
 
-        existing = setupArray(existing, 'objectPermissions');
-        existing = setupArray(existing, 'fieldPermissions');
-        existing = setupArray(existing, 'layoutAssignments');
-        existing = setupArray(existing, 'recordTypes');
-        existing = setupArray(existing, 'tabSettings');
+        existing = await setupArray(existing, 'objectPermissions');
+        existing = await setupArray(existing, 'fieldPermissions');
+        existing = await setupArray(existing, 'layoutAssignments');
+        existing = await setupArray(existing, 'recordTypes');
+        existing = await setupArray(existing, 'tabSettings');
         // this.ux.logJson(existing.objectPermissions);
         // this.ux.logJson(existing.fieldPermissions);
 
@@ -88,10 +76,11 @@ export default class UnPerm extends SfdxCommand {
             item => item.tab !== this.flags.object && item.tab !== `standard-${this.flags.object}`
         );
 
-        existing = await fixExistingDollarSign(existing);
-
-        const outputXML = jsToXml.parse(metadataType, existing, options.js2xmlStandardOptions);
-        fs.writeFileSync(targetFilename, outputXML);
+        await writeJSONasXML({
+            path: targetFilename,
+            type: metadataType,
+            json: existing
+        });
         this.ux.log(
             `removed ${objectBefore - existing.objectPermissions.length} objects, ${recordTypeBefore -
                 existing.recordTypeVisibilities.length} recordTypes, ${layoutBefore - existing.layoutAssignments.length} layout, ${fieldBefore -

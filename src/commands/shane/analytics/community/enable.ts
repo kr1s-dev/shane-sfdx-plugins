@@ -1,31 +1,45 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import * as puppeteer from 'puppeteer';
-import * as stripcolor from 'strip-color';
 
-import { exec } from '../../../../shared/execProm';
+import { exec2JSON } from '@mshanemc/plugin-helpers';
 
 export default class CommunityEnable extends SfdxCommand {
     public static description = 'Activate a community using a headless browser';
+
     public static aliases = ['shane:communities:analytics:enable'];
 
     protected static requiresUsername = true;
+
+    public static hidden;
+
+    protected static deprecated = {
+        version: 47,
+        message: `This command is no longer needed because your scratch def file can use
+
+"analyticsSettings": {
+    "canShareAppsWithCommunities": true,
+    "enableAnalyticsSharingEnable": true
+}`
+    };
 
     protected static flagsConfig = {
         showbrowser: flags.boolean({ char: 'b', description: 'show the browser...useful for local debugging' })
     };
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         // this.ux.startSpinner('starting headless browser');
 
-        const browser = await puppeteer.launch({ headless: !this.flags.showbrowser, args: ['--no-sandbox'] });
+        const browser = await puppeteer.launch({
+            headless: !this.flags.showbrowser,
+            args: ['--no-sandbox', '--disable-web-security', '--disable-features=IsolateOrigins,site-per-process']
+        });
         const context = browser.defaultBrowserContext();
 
         // // get the force-org-open url for your scratch org
-        const openResult = await exec('sfdx force:org:open -p /lightning/setup/InsightsSetupSettings/home -r --json');
+        const openResult = await exec2JSON('sfdx force:org:open -p /lightning/setup/InsightsSetupSettings/home -r --json');
         const iframeTitle = 'Get Started ~ Salesforce - Developer Edition';
 
-        const url = JSON.parse(stripcolor(openResult.stdout)).result.url;
+        const { url } = openResult.result;
 
         await context.overridePermissions(url, ['notifications']);
         const page = await browser.newPage();

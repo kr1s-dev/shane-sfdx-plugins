@@ -1,9 +1,100 @@
+// eslint-disable-next-line import/no-unresolved
+import { Field } from 'jsforce/describe-result';
+
+// import {Field } from '@'
+interface User extends Record {
+    Username?: string;
+}
+
+interface ContentVersion extends Record {
+    Title: string;
+    FileExtension: string;
+    VersionData: string;
+    ContentDocumentId?: string;
+}
+
+interface ContentDocument extends Record {
+    LatestPublishedVersionId: string;
+}
+
+interface ContentVersionCreateRequest {
+    PathOnClient: string;
+    Title?: string;
+}
+
+interface FieldMeta {
+    label: string;
+    // tslint:disable-next-line:no-reserved-keywords
+    type: string;
+    fullName: string;
+    defaultValue?: string;
+    description?: string;
+    inlineHelpText?: string;
+    required?: boolean;
+    unique?: boolean;
+    externalId?: boolean;
+    length?: number;
+    scale?: number;
+    precision?: number;
+    relationshipLabel?: string;
+    relationshipName?: string;
+    referenceTo?: string;
+    trackHistory?: boolean;
+    visibleLines?: number;
+    valueSet?: { valueSetDefinition?: ValueSetDefinition };
+    displayLocationInDecimal?: boolean;
+    deleteConstraint?: boolean;
+    writeRequiresMasterRead?: boolean;
+    reparentableMasterDetail?: boolean;
+    relationshipOrder?: number;
+}
+
+interface ValueSetDefinition {
+    sorted: boolean;
+    value: Value[];
+}
+
+interface Value {
+    fullName: string;
+    default?: boolean;
+    label: string;
+}
+
+interface ObjectConfig {
+    '@': {};
+    deploymentStatus: string;
+    label: string;
+    pluralLabel: string;
+    indexes?: {};
+    eventType?: string;
+    description?: string;
+    nameField?: {
+        label: string;
+        type: string;
+        displayFormat?: string;
+    };
+    sharingModel?: string;
+    enableActivities?: boolean;
+    enableBulkApi?: boolean;
+    enableFeeds?: boolean;
+    enableHistory?: boolean;
+    enableReports?: boolean;
+    enableSearch?: boolean;
+    enableSharing?: boolean;
+    enableStreamingApi?: boolean;
+    visibility?: string;
+}
+
 interface Record {
     attributes: object;
     Id: string;
+
     Name?: string;
 
     ContentDocumentId?: string;
+
+    LiveAgentChatUrl?: string;
+    LiveAgentContentUrl?: string;
 }
 
 interface QueryResult {
@@ -81,8 +172,7 @@ interface WaveDataSetListResponse {
     datasets: WaveDataset[];
 }
 
-interface CDCEvent {
-    schema: string;
+interface CDCEvent extends PlatformEvent {
     payload: {
         ChangeEventHeader: {
             entityName: string;
@@ -90,9 +180,15 @@ interface CDCEvent {
             recordIds: string[];
         };
     };
+}
+
+interface PlatformEvent {
+    schema: string;
+    payload: {};
     event: {
         replayId: number;
     };
+    channel: string;
 }
 
 interface CommunitiesRestResult {
@@ -104,8 +200,46 @@ interface CommunitiesRestResult {
         }
     ];
 }
+
+interface ToolingAPIDescribeQueryResult {
+    totalSize: number;
+    done: boolean;
+    records: Field[];
+}
+
+interface AiAuthResponse {
+    access_token: string;
+    token_type: string;
+    expires_in: number;
+    refresh_token?: string;
+}
+
+interface FavoriteRequestBody {
+    targetType: string;
+    target: string;
+    sortOrder?: number;
+    name?: string;
+}
+
+interface PushTopic {
+    Id: string;
+    Name: string;
+    Description: string;
+    Query: string;
+    NotifyForOperationUpdate: boolean;
+    NotifyForOperationUndelete: boolean;
+    NotifyForOperationDelete: boolean;
+    NotifyForOperationCreate: boolean;
+    NotifyForFields: string;
+    IsActive: boolean;
+    ApiVersion: number;
+}
+
 export {
+    PushTopic,
     Record,
+    ContentVersion,
+    ContentDocument,
     QueryResult,
     CreateResult,
     CustomLabel,
@@ -113,5 +247,13 @@ export {
     WaveDatasetVersion,
     CDCEvent,
     WaveDataFlowListResponse,
-    CommunitiesRestResult
+    CommunitiesRestResult,
+    ToolingAPIDescribeQueryResult,
+    PlatformEvent,
+    ObjectConfig,
+    FieldMeta,
+    ContentVersionCreateRequest,
+    User,
+    AiAuthResponse,
+    FavoriteRequestBody
 };

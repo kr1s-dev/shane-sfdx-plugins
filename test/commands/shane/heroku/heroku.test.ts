@@ -1,14 +1,14 @@
+/* eslint-disable no-template-curly-in-string */
 /* tslint:disable:no-unused-expression */
-import fs = require('fs-extra');
-import * as stripcolor from 'strip-color';
+import { exec, exec2JSON } from '@mshanemc/plugin-helpers';
 
-import { exec } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'mshanemc-custexp-1234567890';
 
 describe('shane:heroku:connect', () => {
-    jest.setTimeout(testutils.remoteTimeout);
+    jest.setTimeout(testutils.remoteTimeout * 2);
 
     if (!process.env.LOCALONLY) {
         // create an org
@@ -17,20 +17,21 @@ describe('shane:heroku:connect', () => {
             await exec(`sfdx force:project:create -n ${testProjectName}`);
 
             await testutils.orgCreate(testProjectName);
-            await exec('sfdx force:user:password:generate', { cwd: testProjectName });
+            await Promise.all([
+                exec('sfdx force:user:password:generate', { cwd: testProjectName }),
+                exec('sfdx shane:profile:allowip -n Admin', { cwd: testProjectName }), // we can't handle 2FA challenges in a headless browser!
+                fs.writeJSON(`${testProjectName}/mapping.json`, testMapping)
+            ]);
 
-            // we can't handle 2FA challenges in a headless browser!
-            await exec('sfdx shane:profile:whitelist -n Admin', { cwd: testProjectName });
             await exec('sfdx force:source:push', { cwd: testProjectName });
             // create our test file
-            await fs.writeJSON(`${testProjectName}/mapping.json`, testMapping);
 
             try {
                 await exec('heroku destroy -a `basename "${PWD/mshanemc-/}"` -c `basename "${PWD/mshanemc-/}"`', {
                     cwd: testProjectName,
                     shell: '/bin/bash'
                 });
-            } catch (e) {
+            } catch (error) {
                 // it's ok....just wanted to make sure it's not there before trying to create it
             }
             // generate a password because we'll need it for heroku connect authing
@@ -38,30 +39,22 @@ describe('shane:heroku:connect', () => {
 
         it('sets up a heroku app with deploy', async () => {
             // sfdx shane:heroku:repo:deploy -g mshanemc -r electron-web-app -n `basename "${PWD/mshanemc-/}"` -t ci-tests
-            const results = await exec(
+            const results = await exec2JSON(
                 'sfdx shane:heroku:repo:deploy -g mshanemc -r electron-web-app -n `basename "${PWD/mshanemc-/}"` -t ci-tests --json',
                 { cwd: testProjectName, shell: '/bin/bash' }
             );
 
-            expect(results).toBeTruthy();
-            expect(results.stdout).toBeTruthy();
-            const stdout = JSON.parse(stripcolor(results.stdout));
-            expect(stdout.status).toBe(0);
+            expect(results).toEqual(expect.objectContaining({ status: 0 }));
         });
 
         it('configures connect with json response', async () => {
             // sfdx shane:heroku:connect -a `basename "${PWD/mshanemc-/}"` -f assets/herokuConnect/electron-web.json
-            const results = await exec('sfdx shane:heroku:connect -a `basename "${PWD/mshanemc-/}"` -f mapping.json -e custom --json', {
+            const results = await exec2JSON('sfdx shane:heroku:connect -a `basename "${PWD/mshanemc-/}"` -f mapping.json -e custom --json', {
                 cwd: testProjectName,
                 shell: '/bin/bash'
             });
 
-            // console.log(results);
-            expect(results).toBeTruthy();
-            expect(results.stdout).toBeTruthy();
-            // console.log(results.stdout);
-            const stdout = JSON.parse(stripcolor(results.stdout));
-            expect(stdout.status).toBe(0);
+            expect(results).toEqual(expect.objectContaining({ status: 0 }));
         });
 
         afterAll(async () => {

@@ -5,10 +5,10 @@ interface ExternalAppsJSON {
     communities: any; // tslint:disable-line:no-any
 }
 
-export async function getExternalApps(conn: Connection): Promise<ExternalAppsJSON> {
+const getExternalApps = async (conn: Connection): Promise<ExternalAppsJSON> => {
     // get the domain
     const domains = await conn.query('select CnameTarget, Domain from Domain');
-    // tslint:disable-next-line:no-any
+
     const mainDomain: any = domains.records.find((domain: any) => domain.CnameTarget === null);
     const output: ExternalAppsJSON = {
         domain: mainDomain.Domain,
@@ -18,10 +18,11 @@ export async function getExternalApps(conn: Connection): Promise<ExternalAppsJSO
 
     const networks = await conn.query('select id, Name, status, UrlPathPrefix from Network where UrlPathPrefix != null');
 
-    // tslint:disable-next-line:no-any
     networks.records.forEach((network: any) => {
         output.communities[network.UrlPathPrefix] = network.Name;
     });
 
     return output;
-}
+};
+
+export { getExternalApps };

@@ -1,9 +1,9 @@
 import { flags, SfdxCommand } from '@salesforce/command';
-import chalk from 'chalk';
-import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
 
-import * as options from '../../../shared/js2xmlStandardOptions';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { removeTrailingSlash } from '../../../shared/flagParsing';
+
+import fs = require('fs-extra');
 
 export default class StaticCreate extends SfdxCommand {
     public static description = 'create a static resource locally';
@@ -33,83 +33,59 @@ export default class StaticCreate extends SfdxCommand {
         target: flags.directory({
             char: 't',
             default: 'force-app/main/default',
-            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default"
+            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default",
+            parse: input => removeTrailingSlash(input)
         }),
         public: flags.boolean({ char: 'p', default: false, description: 'mark the cache control public' })
 
         // public: { type: 'boolean',  char: 'p', default: false, description: 'mark the cache control public' })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
-        let contentType;
         const staticPath = `${this.flags.target}/staticresources`;
         const metaPath = `${this.flags.target}/staticresources/${this.flags.name}.resource-meta.xml`;
 
-        // remove trailing slash if someone entered it
-        if (this.flags.target.endsWith('/')) {
-            this.flags.target = this.flags.target.substring(0, this.flags.target.length - 1);
-        }
-
         // make /staticresources exist if it doesn't already
-        if (!fs.existsSync(staticPath)) {
-            fs.mkdirSync(staticPath);
-        } else if (fs.existsSync(metaPath)) {
-            this.ux.error(chalk.red(`a static resource by that name already exists at ${metaPath}`));
-            return;
+        if (fs.existsSync(metaPath)) {
+            throw new Error(`a static resource by that name already exists at ${metaPath}`);
         }
-
-        switch (this.flags.type) {
-            case 'zip':
-                // make a folder with the name
-                fs.mkdirSync(`${staticPath}/${this.flags.name}`);
-                contentType = 'application/zip';
-                break;
-            case 'css':
-                // make a file with that name
-                contentType = 'text/css';
-                fs.writeFileSync(`${staticPath}/${this.flags.name}.css`, '');
-                break;
-            case 'js':
-                // make a file with that name
-                contentType = 'application/javascript';
-                fs.writeFileSync(`${staticPath}/${this.flags.name}.js`, '');
-                break;
-            case 'text':
-                // make a file with that name
-                contentType = 'text/plain';
-                fs.writeFileSync(`${staticPath}/${this.flags.name}.txt`, '');
-                break;
-            case 'xml':
-                // make a file with that name
-                contentType = 'application/xml';
-                fs.writeFileSync(`${staticPath}/${this.flags.name}.xml`, '');
-                break;
-            default:
-                this.ux.error(`unsupported file type ${this.flags.type}.  Valid are zip, text, js, xml, css`);
-        }
-
-        const metaJSON = {
-            '@': {
-                xmlns: 'http://soap.sforce.com/2006/04/metadata'
-            },
-            cacheControl: this.flags.public ? 'Public' : 'Private',
-            contentType,
-            description: this.flags.description,
-            fullName: this.flags.name
-        };
-
-        const xml = jsToXml.parse('StaticResource', metaJSON, options.js2xmlStandardOptions);
-
-        fs.writeFileSync(metaPath, xml);
+        await fs.ensureDir(staticPath);
 
         if (this.flags.type === 'zip') {
-            this.ux.log(chalk.green('Empty Static Resource folder created locally for you to fill with good things'));
+            await fs.mkdir(`${staticPath}/${this.flags.name}`);
         } else {
-            this.ux.log(chalk.green('Empty Static Resource created locally'));
+            await fs.writeFile(`${staticPath}/${this.flags.name}.${suffixMap.get(this.flags.type) ?? this.flags.type}`, '');
         }
+        await writeJSONasXML({
+            path: metaPath,
+            type: 'StaticResource',
+            json: {
+                '@': {
+                    xmlns: 'http://soap.sforce.com/2006/04/metadata'
+                },
+                cacheControl: this.flags.public ? 'Public' : 'Private',
+                contentType: contentTypeMap.get(this.flags.type),
+                description: this.flags.description,
+                fullName: this.flags.name
+            }
+        });
+
+        this.ux.log(
+            this.flags.type === 'zip'
+                ? 'Empty Static Resource folder created locally for you to fill with good things'
+                : 'Empty Static Resource created locally'
+        );
     }
 }
+
+const contentTypeMap = new Map([
+    ['zip', 'application/zip'],
+    ['css', 'text/css'],
+    ['js', 'application/javascript'],
+    ['text', 'text/plan'],
+    ['xml', 'application/xml']
+]);
+
+const suffixMap = new Map([['text', 'txt']]);

@@ -1,8 +1,8 @@
 /* tslint:disable:no-unused-expression */
-import fs = require('fs-extra');
+import { exec } from '@mshanemc/plugin-helpers';
 
-import { exec } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'testProjectRemoteSiteSettings';
 
@@ -26,7 +26,7 @@ describe('shane:remotesite:create', () => {
             `${testProjectName}/force-app/main/default/remoteSiteSettings/${testRemSite}.remoteSite-meta.xml`
         );
 
-        expect(parsed.RemoteSiteSetting.url).toBe(url + '/');
+        expect(parsed.RemoteSiteSetting.url).toBe(`${url}/`);
         expect(parsed.RemoteSiteSetting.description).toBe('added from sfdx plugin');
     });
 
@@ -43,7 +43,7 @@ describe('shane:remotesite:create', () => {
             `${testProjectName}/force-app/main/default/remoteSiteSettings/${testRemSite}.remoteSite-meta.xml`
         );
 
-        expect(parsed.RemoteSiteSetting.url).toBe(url + '/');
+        expect(parsed.RemoteSiteSetting.url).toBe(`${url}/`);
         expect(parsed.RemoteSiteSetting.description).toBe(testDescription);
     });
 

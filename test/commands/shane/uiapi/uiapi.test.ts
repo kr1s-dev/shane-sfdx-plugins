@@ -1,9 +1,9 @@
 /* tslint:disable:no-unused-expression */
 
-import fs = require('fs-extra');
+import { exec, exec2JSON } from '@mshanemc/plugin-helpers';
 
-import { exec, exec2JSON } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'testProjectUIAPI';
 const maxBuffer = 1000 * 1024;

@@ -1,8 +1,8 @@
 /* tslint:disable:no-unused-expression */
-import fs = require('fs-extra');
+import { exec } from '@mshanemc/plugin-helpers';
 
-import { exec } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'testProjectStaticResourceCreate';
 
@@ -34,7 +34,7 @@ describe('shane:static:create', () => {
     it('deploys as valid code', async () => {
         jest.setTimeout(testutils.remoteTimeout);
         if (process.env.LOCALONLY === 'true') {
-            console.log('skipping online-only test');
+            console.warn('skipping online-only test');
         } else {
             const deploySuccess = await testutils.itDeploys(testProjectName);
             expect(deploySuccess).toBe(true);

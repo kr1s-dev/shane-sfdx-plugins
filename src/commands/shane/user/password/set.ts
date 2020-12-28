@@ -1,8 +1,9 @@
 import { flags, SfdxCommand } from '@salesforce/command';
-import request = require('request-promise-native');
-import userIdLookup = require('../../../../shared/userIdLookup');
 
 import chalk from 'chalk';
+
+import request = require('request-promise-native');
+import userIdLookup = require('../../../../shared/userIdLookup');
 
 export default class Set extends SfdxCommand {
     public static description = 'Set the password for a user by first/last name';
@@ -16,23 +17,14 @@ export default class Set extends SfdxCommand {
     protected static flagsConfig = {
         firstname: flags.string({ char: 'g', required: true, description: 'first (given) name of the user--keeping -f for file for consistency' }),
         lastname: flags.string({ char: 'l', required: true, description: 'last name of the user' }),
-        password: flags.string({ char: 'p', required: true, description: 'local path of the photo to use' })
+        password: flags.string({ char: 'p', required: true, description: 'the password you want the user to have' })
     };
 
-    // Comment this out if your command does not require an org username
     protected static requiresUsername = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         const conn = this.org.getConnection();
-        let user;
-
-        try {
-            user = await userIdLookup.getUserId(conn, this.flags.lastname, this.flags.firstname);
-        } catch (e) {
-            throw new Error(e);
-        }
-
+        const user = await userIdLookup.getUserId(conn, this.flags.lastname, this.flags.firstname);
         this.ux.log(`found user with id ${user.Id}`);
 
         const resetResult = await request({

@@ -1,9 +1,12 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
 import cli from 'cli-ux';
+
+import { ObjectConfig } from '../../../shared/typeDefs';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { removeTrailingSlash } from '../../../shared/flagParsing';
+
 import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
-import * as options from '../../../shared/js2xmlStandardOptions';
 
 const typeDefinitions = [
     {
@@ -12,6 +15,12 @@ const typeDefinitions = [
         specificOptions: ['activities', 'search', 'feeds'],
         specificRequired: ['nametype', 'namefieldlabel'],
         ending: '__c'
+    },
+    {
+        type: 'cmdt',
+        forbidden: ['activities', 'autonumberformat', 'enterprise', 'feeds', 'highvolume', 'history', 'nametype', 'reports', 'search', 'sharing'],
+        specificRequired: ['visibility'],
+        ending: '__mdt'
     },
     {
         type: 'big',
@@ -69,63 +78,28 @@ export default class ObjectCreate extends SfdxCommand {
         nametype: flags.string({ description: 'name field type', options: ['Text', 'AutoNumber'] }),
         namefieldlabel: flags.string({ description: 'the label for the name field', default: 'Name' }),
         autonumberformat: flags.string({ description: 'the display format for the autonumbering' }),
-
-        highvolume: flags.boolean({ char: 'h', description: 'high volume, valid only for platform events (__e)' }),
+        visibility: flags.string({
+            description: 'visibility for custom metadata types',
+            options: ['Public', 'Protected', 'PackageProtected'],
+            default: 'Public'
+        }),
+        highvolume: flags.boolean({ description: 'high volume, valid only for platform events (__e)' }),
 
         // general command params
         interactive: flags.boolean({ char: 'i', description: 'fully interactive--ask me every possible question.' }),
         directory: flags.directory({
             char: 'd',
             default: 'force-app/main/default',
-            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default"
+            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default",
+            parse: input => removeTrailingSlash(input)
         })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
-        interface ObjectConfig {
-            '@': {};
-            deploymentStatus: string;
-            label: string;
-            pluralLabel: string;
-            indexes?: {};
-            eventType?: string;
-            description?: string;
-            nameField?: {
-                label: string;
-                type: string;
-                displayFormat?: string;
-            };
-            sharingModel?: string;
-            enableActivities?: boolean;
-            enableBulkApi?: boolean;
-            enableFeeds?: boolean;
-            enableHistory?: boolean;
-            enableReports?: boolean;
-            enableSearch?: boolean;
-            enableSharing?: boolean;
-            enableStreamingApi?: boolean;
-        }
-
-        const outputJSON = <ObjectConfig>{
-            '@': {
-                xmlns: 'http://soap.sforce.com/2006/04/metadata'
-            },
-            deploymentStatus: 'Deployed',
-            label: '',
-            pluralLabel: ''
-        };
-
-        // remove trailing slash if someone entered it
-        if (this.flags.directory.endsWith('/')) {
-            this.flags.directory = this.flags.directory.substring(0, this.flags.directory.length - 1);
-        }
-
         if (!this.flags.type) {
-            this.flags.type = await cli.prompt(`Object type [${typeDefinitions.map(td => td.type)}]`);
+            this.flags.type = await cli.prompt(`Object type [${typeDefinitions.map(td => td.type)}]`, { default: 'custom' });
         }
 
         if (!this.flags.label) {
@@ -137,17 +111,23 @@ export default class ObjectCreate extends SfdxCommand {
         }
 
         if (!this.flags.api) {
-            let suffix = '__c';
-            if (this.flags.type === 'big') {
-                suffix = '__b';
-            } else if (this.flags.type === 'event') {
-                suffix = '__e';
-            }
-            this.flags.api = await cli.prompt(`API name (ends with ${suffix}) ?`, { default: `${this.flags.label.replace(/ /g, '_')}${suffix}` });
+            const suffix = typeDefinitions.find(def => def.type === this.flags.type).ending;
+            this.flags.api = await cli.prompt(`API name (ends with ${suffix}) ?`, {
+                default: `${this.flags.label.replace(/ /g, '_')}${suffix}`
+            });
         }
 
         // checks and throws an error if types and params don't mix
         this.validate(this.flags.type);
+
+        const outputJSON = {
+            '@': {
+                xmlns: 'http://soap.sforce.com/2006/04/metadata'
+            },
+            deploymentStatus: 'Deployed',
+            label: this.flags.label,
+            pluralLabel: this.flags.plural
+        } as ObjectConfig;
 
         if (this.flags.type === 'big') {
             outputJSON.indexes = {
@@ -156,18 +136,18 @@ export default class ObjectCreate extends SfdxCommand {
                 fields: []
             };
         }
-
-        outputJSON.label = this.flags.label;
-        outputJSON.pluralLabel = this.flags.plural;
-
-        // optional attributes for all types
         if (this.flags.description) {
+            // optional attributes for all types
             outputJSON.description = this.flags.description;
         } else if (this.flags.interactive) {
             outputJSON.description = await cli.prompt('description?  Be nice to your future self!', { required: false });
         }
 
         // type specific attributes
+        if (this.flags.type === 'cmdt') {
+            delete outputJSON.deploymentStatus;
+            outputJSON.visibility = this.flags.visibility;
+        }
         if (this.flags.type === 'event') {
             if (this.flags.interactive && !this.flags.highvolume) {
                 this.flags.highvolume = await cli.confirm('High Volume (y/n)');
@@ -196,7 +176,9 @@ export default class ObjectCreate extends SfdxCommand {
                 this.flags.activities = await cli.confirm('enable activities? (y/n)');
             }
             if (this.flags.interactive && !this.flags.namefieldlabel) {
-                this.flags.namefieldlabel = await cli.prompt('What do you want to call the name field?', { default: `${this.flags.label} Name` });
+                this.flags.namefieldlabel = await cli.prompt('What do you want to call the name field?', {
+                    default: `${this.flags.label} Name`
+                });
             }
             if (this.flags.interactive && !this.flags.sharing) {
                 this.flags.sharing = await cli.prompt('Sharing model? [ReadWrite, Read, Private]', { default: 'ReadWrite' });
@@ -209,7 +191,7 @@ export default class ObjectCreate extends SfdxCommand {
             }
 
             outputJSON.nameField = {
-                type: this.flags.nametype,
+                type: this.flags.nametype || 'Text',
                 label: this.flags.namefieldlabel
             };
 
@@ -247,24 +229,20 @@ export default class ObjectCreate extends SfdxCommand {
         }
 
         const objectsPath = `${this.flags.directory}/objects`;
-        const thisObjectFolder = `${this.flags.directory}/objects/${this.flags.api}`;
-        const metaFileLocation = `${this.flags.directory}/objects/${this.flags.api}/${this.flags.api}.object-meta.xml`;
+        const thisObjectFolder = `${objectsPath}/${this.flags.api}`;
+        const metaFileLocation = `${thisObjectFolder}/${this.flags.api}.object-meta.xml`;
 
-        fs.ensureDirSync(objectsPath);
-
-        if (!fs.existsSync(thisObjectFolder)) {
-            fs.mkdirSync(thisObjectFolder);
-        } else {
-            this.ux.error(`Object already exists: ${thisObjectFolder}`);
-            return;
+        if (fs.existsSync(thisObjectFolder)) {
+            throw new Error(`Object already exists: ${thisObjectFolder}`);
         }
+        await fs.ensureDir(thisObjectFolder);
 
         fs.ensureDirSync(`${objectsPath}/${this.flags.api}/fields`);
-
-        const xml = jsToXml.parse('CustomObject', outputJSON, options.js2xmlStandardOptions);
-
-        fs.writeFileSync(metaFileLocation, xml);
-
+        await writeJSONasXML({
+            type: 'CustomObject',
+            json: outputJSON,
+            path: metaFileLocation
+        });
         this.ux.log(`Created ${chalk.green(thisObjectFolder)}.  Add fields with ${chalk.cyan(`sfdx shane:object:field -o ${this.flags.api}`)}.`);
     }
 

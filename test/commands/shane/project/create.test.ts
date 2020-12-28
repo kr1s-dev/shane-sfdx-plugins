@@ -1,7 +1,7 @@
-import fs = require('fs-extra');
+import { exec2JSON, exec2String } from '@mshanemc/plugin-helpers';
 
-import { exec2JSON, exec2String } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'testProjectProjectCreate';
 

@@ -1,8 +1,8 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import { StreamingClient } from '@salesforce/core';
-// import { Duration } from '@salesforce/kit';
 import * as fs from 'fs-extra';
-import { CDCEvent } from './../../../shared/typeDefs';
+import { CDCEvent } from '../../../shared/typeDefs';
+import { replay, dir } from '../../../shared/flags';
 
 const writeJSONOptions = {
     spaces: 2
@@ -16,13 +16,16 @@ export default class CDCStream extends SfdxCommand {
     ];
 
     protected static flagsConfig = {
-        object: flags.string({ char: 'o', description: 'subscribe to change events for only a single object (api name, including __c)' }),
-        dir: flags.directory({ char: 'd', description: 'stream the events to a folder instead of the console' })
+        object: flags.string({
+            char: 'o',
+            description: 'subscribe to change events for only a single object (api name, including __c)'
+        }),
+        dir,
+        replay
     };
 
     protected static requiresUsername = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         const streamProcessor = message => {
             this.ux.logJson(message);
@@ -41,6 +44,7 @@ export default class CDCStream extends SfdxCommand {
         options.apiVersion = await this.org.retrieveMaxApiVersion();
         // options.subscribeTimeout = new Duration(60 * 100);
         const client = await StreamingClient.create(options);
+        client.replay(this.flags.replay);
 
         await client.handshake();
         await client.subscribe(async () => {

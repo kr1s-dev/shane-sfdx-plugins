@@ -1,20 +1,12 @@
+// eslint-disable-next-line unicorn/filename-case
 import { Connection } from '@salesforce/core';
-import { QueryResult, Record } from './../shared/typeDefs';
+import { singleRecordQuery } from '@mshanemc/plugin-helpers/dist/queries';
+import { User } from './typeDefs';
 
-export async function getUserId(conn: Connection, lastname: string, firstname?: string): Promise<Record> {
-    let query;
+export async function getUserId(conn: Connection, lastname: string, firstname?: string): Promise<User> {
+    let query = `Select Id, Username from User where LastName = '${lastname}'`;
     if (firstname) {
-        query = `Select Id, Username from User where LastName = '${lastname}' and FirstName = '${firstname}'`;
-    } else {
-        query = `Select Id, Username from User where LastName = '${lastname}'`;
+        query = `${query} and FirstName = '${firstname}'`;
     }
-
-    const users = <QueryResult>await conn.query(query);
-    if (users.totalSize > 1) {
-        throw new Error('There are more than 1 result for that name.');
-    } else if (users.totalSize === 0) {
-        throw new Error('User not found');
-    } else {
-        return users.records[0];
-    }
+    return singleRecordQuery({ conn, query });
 }

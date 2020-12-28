@@ -35,7 +35,6 @@ export default class PermCheck extends SfdxCommand {
 
     protected static requiresUsername = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         const output = [];
         if (!this.flags.profiles && !this.flags.permsets && !this.flags.users) {
@@ -47,29 +46,26 @@ export default class PermCheck extends SfdxCommand {
         let withAccess;
 
         if (this.flags.field) {
-            // tslint:disable-next-line:no-any
-            withAccess = <any[]>(
-                (await conn.query(
-                    `select ParentId, Parent.Name, Parent.IsOwnedByProfile, Parent.ProfileId from FieldPermissions where ${levelTranlator(
+            withAccess = (
+                await conn.query(
+                    `select ParentId, Parent.Name, Parent.IsOwnedByProfile, Parent.ProfileId from FieldPermissions where ${levelMap.get(
                         this.flags.fieldlevel
                     )} = true and SobjectType = '${this.flags.object}' and Field = '${this.flags.object}.${this.flags.field}'`
-                )).records
-            );
+                )
+            ).records as any[];
         } else {
-            // tslint:disable-next-line:no-any
-            withAccess = <any[]>(
-                (await conn.query(
-                    `select ParentId, Parent.Name, Parent.IsOwnedByProfile, Parent.ProfileId from ObjectPermissions where ${levelTranlator(
+            withAccess = (
+                await conn.query(
+                    `select ParentId, Parent.Name, Parent.IsOwnedByProfile, Parent.ProfileId from ObjectPermissions where ${levelMap.get(
                         this.flags.objectlevel
                     )} = true and SobjectType = '${this.flags.object}'`
-                )).records
-            );
+                )
+            ).records as any[];
         }
 
         const profileswithAccess = withAccess.filter(ps => ps.Parent.IsOwnedByProfile);
         const permsetswithAccess = withAccess.filter(ps => !ps.Parent.IsOwnedByProfile);
 
-        // tslint:disable-next-line:no-any
         const profilesById = async permsetsList => {
             if (permsetsList.length === 0) {
                 return [];
@@ -79,25 +75,21 @@ export default class PermCheck extends SfdxCommand {
         };
 
         if (this.flags.profiles || this.flags.users) {
-            // tslint:disable-next-line:no-any
-            const profiles = <any[]>await profilesById(profileswithAccess);
-            profiles.forEach(profile => {
-                output.push({
-                    type: 'Profile',
-                    name: profile.Name,
-                    id: profile.Id
-                });
-            });
+            output.concat((await profilesById(profileswithAccess)) as any[]).map(profile => ({
+                type: 'Profile',
+                name: profile.Name,
+                id: profile.Id
+            }));
         }
 
         if (this.flags.permsets || this.flags.users) {
-            permsetswithAccess.forEach(ps => {
-                output.push({
+            output.concat(
+                permsetswithAccess.map(ps => ({
                     type: 'PermissionSet',
                     name: ps.Parent.Name,
                     id: ps.ParentId
-                });
-            });
+                }))
+            );
         }
 
         if (this.flags.users) {
@@ -106,9 +98,8 @@ export default class PermCheck extends SfdxCommand {
                 .filter(i => i.type === 'Profile')
                 .map(profile => `'${profile.id}'`)
                 .join(',')})`;
-            // tslint:disable-next-line:no-any
-            const profileUsers = <any[]>(await conn.query(query)).records;
-            const userOutput = profileUsers.map(user => ({
+
+            const userOutput = ((await conn.query(query)).records as any[]).map(user => ({
                 userid: user.Id,
                 name: user.Name,
                 username: user.Username,
@@ -120,8 +111,8 @@ export default class PermCheck extends SfdxCommand {
                 .filter(i => i.type === 'PermissionSet')
                 .map(ps => `'${ps.id}'`)
                 .join(',')})`;
-            // tslint:disable-next-line:no-any
-            const psaUsers = <any[]>(await conn.query(psaQuery)).records;
+
+            const psaUsers = (await conn.query(psaQuery)).records as any[];
             psaUsers.forEach(psaUser => {
                 // if in the list, add the permset to the permsets columns
                 const index = userOutput.findIndex(user => user.userid === psaUser.AssigneeId);
@@ -140,18 +131,17 @@ export default class PermCheck extends SfdxCommand {
 
             this.ux.table(userOutput, ['userid', 'name', 'username', 'profile', 'permsets']);
             return userOutput;
-        } else {
-            this.ux.table(output, ['type', 'name', 'id']);
-            return output;
         }
+        this.ux.table(output, ['type', 'name', 'id']);
+        return output;
     }
 }
 
-const levelTranlator = objectlevel => {
-    if (objectlevel === 'Read') return 'PermissionsRead';
-    if (objectlevel === 'Create') return 'PermissionsCreate';
-    if (objectlevel === 'Edit') return 'PermissionsEdit';
-    if (objectlevel === 'Delete') return 'PermissionsDelete';
-    if (objectlevel === 'ViewAll') return 'PermissionsViewAllRecords';
-    if (objectlevel === 'ModifyAll') return 'PermissionsModifyAllRecords';
-};
+const levelMap = new Map([
+    ['Read', 'PermissionsRead'],
+    ['Create', 'PermissionsCreate'],
+    ['Edit', 'PermissionsEdit'],
+    ['Delete', 'PermissionsDelete'],
+    ['ViewAll', 'PermissionsViewAllRecords'],
+    ['ModifyAll', 'PermissionsModifyAllRecords']
+]);

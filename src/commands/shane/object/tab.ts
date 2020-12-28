@@ -1,10 +1,9 @@
 import { flags, SfdxCommand } from '@salesforce/command';
-import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
-
-import * as options from '../../../shared/js2xmlStandardOptions';
-
 import chalk from 'chalk';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { removeTrailingSlash } from '../../../shared/flagParsing';
+
+import fs = require('fs-extra');
 
 export default class ObjectTab extends SfdxCommand {
     public static description = 'create a tab from a custom object, and you have to pick an icon';
@@ -27,35 +26,28 @@ export default class ObjectTab extends SfdxCommand {
         target: flags.directory({
             char: 't',
             default: 'force-app/main/default',
-            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default"
+            description: "where to create the folder (if it doesn't exist already) and file...defaults to force-app/main/default",
+            parse: input => removeTrailingSlash(input)
         })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
-        // remove trailing slash if someone entered it
-        if (this.flags.target.endsWith('/')) {
-            this.flags.target = this.flags.target.substring(0, this.flags.target.length - 1);
-        }
-
         // make sure the tabs directory exists
         await fs.ensureDir(`${this.flags.target}/tabs`);
 
-        const settingJSON = {
-            '@': {
-                xmlns: 'http://soap.sforce.com/2006/04/metadata'
-            },
-            customObject: true,
-            motif: tabDefs.find(tab => tab.includes(`Custom${this.flags.icon}:`))
-        };
-
-        const xml = jsToXml.parse('CustomTab', settingJSON, options.js2xmlStandardOptions);
-
-        await fs.writeFile(`${this.flags.target}/tabs/${this.flags.object}.tab-meta.xml`, xml);
-
+        await writeJSONasXML({
+            path: `${this.flags.target}/tabs/${this.flags.object}.tab-meta.xml`,
+            type: 'CustomTab',
+            json: {
+                '@': {
+                    xmlns: 'http://soap.sforce.com/2006/04/metadata'
+                },
+                customObject: true,
+                motif: tabDefs.find(tab => tab.includes(`Custom${this.flags.icon}:`))
+            }
+        });
         this.ux.log(chalk.green('Tab created locally.'));
     }
 }

@@ -1,22 +1,13 @@
 import { flags, SfdxCommand } from '@salesforce/command';
 import chalk from 'chalk';
-import fs = require('fs-extra');
-import jsToXml = require('js2xmlparser');
-import * as _ from 'lodash';
-import { fixExistingDollarSign, getExisting } from '../../../shared/getExisting';
-import * as options from '../../../shared/js2xmlStandardOptions';
-import { setupArray } from '../../../shared/setupArray';
+import { unionBy } from 'lodash';
 
-const thingsThatMigrate = [
-    { profileType: 'applicationVisibilities', permSetType: 'applicationVisibilities', key: 'application' },
-    { profileType: 'classAccesses', permSetType: 'classAccesses', key: 'apexClass' },
-    { profileType: 'externalDataSourceAccesses', permSetType: 'externalDataSourceAccesses', key: 'externalDataSource' },
-    { profileType: 'fieldPermissions', permSetType: 'fieldPermissions', key: 'field' },
-    { profileType: 'objectPermissions', permSetType: 'objectPermissions', key: 'object' },
-    { profileType: 'pageAccesses', permSetType: 'pageAccesses', key: 'apexPage' },
-    { profileType: 'recordTypeVisibilities', permSetType: 'recordTypeVisibilities', key: 'recordType' },
-    { profileType: 'tabVisibilities', permSetType: 'tabSettings', key: 'tab' }
-];
+import { getExisting } from '@mshanemc/plugin-helpers/dist/getExisting';
+import { setupArray } from '@mshanemc/plugin-helpers/dist/setupArray';
+import { writeJSONasXML } from '@mshanemc/plugin-helpers/dist/JSONXMLtools';
+import { thingsThatMigrate } from '../../../shared/permsetProfileMetadata';
+
+import fs = require('fs-extra');
 
 export default class PermSetConvert extends SfdxCommand {
     public static description = 'convert a profile into a permset';
@@ -54,10 +45,8 @@ export default class PermSetConvert extends SfdxCommand {
         })
     };
 
-    // Set this to true if your command requires a project workspace; 'requiresProject' is false by default
     protected static requiresProject = true;
 
-    // tslint:disable-next-line:no-any
     public async run(): Promise<any> {
         const targetFilename = `${this.flags.directory}/permissionsets/${this.flags.name}.permissionset-meta.xml`;
         const targetProfile = `${this.flags.directory}/profiles/${this.flags.profile}.profile-meta.xml`;
@@ -77,32 +66,34 @@ export default class PermSetConvert extends SfdxCommand {
 
         let profile = await getExisting(targetProfile, 'Profile');
 
-        thingsThatMigrate.forEach(item => {
+        for (const item of thingsThatMigrate) {
             if (profile[item.profileType]) {
-                profile = setupArray(profile, item.profileType);
-                existing = setupArray(existing, item.permSetType);
+                profile = await setupArray(profile, item.profileType);
+                existing = await setupArray(existing, item.permSetType);
 
                 this.ux.log(`copying ${item.profileType} to perm set`);
-                existing[item.permSetType] = _.unionBy(existing[item.permSetType], profile[item.profileType], item.key); // merge profile with existing permset array
+                existing[item.permSetType] = unionBy(existing[item.permSetType], profile[item.profileType], item.key); // merge profile with existing permset array
 
                 // special handling for applicationVisibility (default not allowed in permset)
                 if (item.permSetType === 'applicationVisibilities') {
-                    existing.applicationVisibilities = existing.applicationVisibilities.map(aV => {
-                        delete aV.default;
-                        return aV;
-                    });
+                    existing.applicationVisibilities = existing.applicationVisibilities.map(aV => ({
+                        visible: aV.visible,
+                        application: aV.application
+                    }));
                 }
 
                 if (item.permSetType === 'recordTypeVisibilities') {
-                    existing.recordTypeVisibilities = existing.recordTypeVisibilities.map(rtV => {
-                        delete rtV.default;
-                        delete rtV.personAccountDefault;
-                        return rtV;
-                    });
+                    existing.recordTypeVisibilities = existing.recordTypeVisibilities.map(rtV => ({
+                        visible: rtV.visible,
+                        recordType: rtV.recordType
+                    }));
                 }
 
                 if (item.permSetType === 'tabSettings') {
-                    existing.tabSettings = existing.tabSettings.map(tV => ({ ...tV, visibility: translateTabTypes(tV.visibility) }));
+                    existing.tabSettings = existing.tabSettings.map(tV => ({
+                        ...tV,
+                        visibility: translateTabTypes(tV.visibility)
+                    }));
                 }
 
                 if (this.flags.editprofile) {
@@ -111,31 +102,38 @@ export default class PermSetConvert extends SfdxCommand {
             } else {
                 this.ux.log(`found no ${item.profileType} on the profile`);
             }
-        });
+        }
 
-        existing = await fixExistingDollarSign(existing);
-
-        fs.ensureDirSync(`${this.flags.directory}/permissionsets`);
+        await fs.ensureDir(`${this.flags.directory}/permissionsets`);
 
         // convert to xml and write out the file
-        const permSetXml = jsToXml.parse('PermissionSet', existing, options.js2xmlStandardOptions);
-        fs.writeFileSync(targetFilename, permSetXml);
-
+        // const permSetXml = jsToXml.parse('PermissionSet', existing, options.js2xmlStandardOptions);
+        // fs.writeFileSync(targetFilename, permSetXml);
+        await writeJSONasXML({
+            path: targetFilename,
+            json: existing,
+            type: 'PermissionSet'
+        });
         // we either write this file over existing profile, or to a new one.
         if (this.flags.editprofile || this.flags.skinnyclone) {
             // correct @ => $ issue
-            profile = await fixExistingDollarSign(profile);
-
-            const profileXml = jsToXml.parse('Profile', profile, options.js2xmlStandardOptions);
-
+            // check for the special perms that will cause all the object/field stuff to get written back in
             if (this.flags.editprofile) {
                 // edit the existing profile
-                fs.writeFileSync(targetProfile, profileXml);
+                await writeJSONasXML({
+                    path: targetProfile,
+                    json: stripViewModifyAll(profile),
+                    type: 'Profile'
+                });
                 this.ux.log(`Permissions removed from ${targetProfile}`);
             } else if (this.flags.skinnyclone) {
                 // save it as a new profile
                 const skinnyTarget = `${this.flags.directory}/profiles/${this.flags.profile}_Skinny.profile-meta.xml`;
-                fs.writeFileSync(skinnyTarget, profileXml);
+                await writeJSONasXML({
+                    path: skinnyTarget,
+                    json: stripViewModifyAll(profile),
+                    type: 'Profile'
+                });
                 this.ux.log(chalk.green(`Skinny version saved at ${skinnyTarget}`));
             }
         }
@@ -147,7 +145,14 @@ export default class PermSetConvert extends SfdxCommand {
 
 const translateTabTypes = profileTabType => {
     if (profileTabType === 'DefaultOff') return 'Available';
-    else if (profileTabType === 'DefaultOn') return 'Visible';
-    else if (profileTabType === 'Hidden') return 'None';
-    else throw new Error(`unmatched tab visibility type on profile: ${profileTabType}`);
+    if (profileTabType === 'DefaultOn') return 'Visible';
+    if (profileTabType === 'Hidden') return 'None';
+    if (['Available', 'Visible', 'None'].includes(profileTabType)) return profileTabType;
+    throw new Error(`unmatched tab visibility type on profile: ${profileTabType}`);
+};
+
+const stripViewModifyAll = profile => {
+    const newProfile = { ...profile };
+    newProfile.userPermissions = newProfile.userPermissions.filter(perm => perm.name !== 'ModifyAllData' && perm.name !== 'ViewAllData');
+    return newProfile;
 };

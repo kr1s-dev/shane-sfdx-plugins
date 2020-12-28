@@ -1,8 +1,8 @@
 /* tslint:disable:no-unused-expression */
-import fs = require('fs-extra');
+import { exec } from '@mshanemc/plugin-helpers';
 
-import { exec } from '../../../../src/shared/execProm';
-import testutils = require('../../../helpers/testutils');
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const testProjectName = 'testProjectBigObjectCreate';
 const api = 'Platypus__b';
@@ -216,7 +216,7 @@ describe('shane:object:create (big object flavor)', () => {
 
         expect(parsed.PermissionSet.fieldPermissions.length).toBe(2);
 
-        // verify all the fields so far.  Required fields, and fileds required because they're indexed, shouldn't be included
+        // verify all the fields so far.  Required fields, and fields required because they're indexed, shouldn't be included
         const trueFields = [`${api}.Non_Indexed_Field__c`, `${api}.Number_Field__c`];
         const falseFields = [
             `${api}.Indexed_Field3__c`,

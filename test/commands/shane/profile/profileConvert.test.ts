@@ -1,9 +1,9 @@
 /* tslint:disable:no-unused-expression */
-import fs = require('fs-extra');
-import testutils = require('../../../helpers/testutils');
+import { exec } from '@mshanemc/plugin-helpers';
+import { getExisting } from '@mshanemc/plugin-helpers/dist/getExisting';
 
-import { exec } from '../../../../src/shared/execProm';
-import { getExisting } from '../../../../src/shared/getExisting';
+import fs = require('fs-extra');
+import testutils = require('@mshanemc/plugin-helpers/dist/testutils');
 
 const profileName = 'Admin';
 const newPermSetName = 'TestNewPerm';
@@ -18,7 +18,8 @@ describe('profile convert (just create a permset from a profile)', () => {
     // get a clean copy of the original repo
     beforeEach(async () => {
         await fs.remove(testProjectName);
-        await exec(`git clone https://github.com/mshanemc/profile-example-for-conversion-testing ${testProjectName}`);
+        await fs.copy('test/golden-copy-test-repo', testProjectName);
+        // await exec(`git clone https://github.com/mshanemc/profile-example-for-conversion-testing ${testProjectName}`);
     });
 
     test('does a simple convert of the Admin profile', async () => {
